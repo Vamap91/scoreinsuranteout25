@@ -719,13 +719,16 @@ def main():
                     # Acidentes
                     st.caption("🚗 Analisando acidentes...")
                     analise = analisar_acidentes_regiao(municipio, uf, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '🚗 Acidentes Trânsito',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                     
                     progress_bar.progress(75)
@@ -733,13 +736,16 @@ def main():
                     # Qualidade das Vias
                     st.caption("🛣️ Analisando qualidade das vias...")
                     analise = analisar_qualidade_vias(municipio, uf, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '🛣️ Qualidade das Vias',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                     
                     progress_bar.progress(80)
@@ -747,13 +753,16 @@ def main():
                     # Fiscalização
                     st.caption("🚔 Analisando fiscalização...")
                     analise = analisar_fiscalizacao(municipio, uf, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '🚔 Fiscalização e Radares',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                     
                     progress_bar.progress(83)
@@ -761,13 +770,16 @@ def main():
                     # Criminalidade
                     st.caption("⚠️ Analisando criminalidade...")
                     analise = analisar_criminalidade_regiao(municipio, uf, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '⚠️ Criminalidade',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                     
                     progress_bar.progress(86)
@@ -775,13 +787,16 @@ def main():
                     # Densidade de Frota
                     st.caption("🚙 Analisando densidade de frota...")
                     analise = analisar_densidade_frota(municipio, uf, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '🚙 Densidade de Frota',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                 
                 # Análise Empresarial
@@ -893,13 +908,19 @@ def main():
             """)
             
             for insight in insights_tavily:
-                conf = insight.get('confiabilidade', {})
+                conf = insight.get('confiabilidade', {
+                    'nivel': 'MÉDIA',
+                    'cor': 'orange',
+                    'emoji': '⚠️',
+                    'motivo': 'Fonte não especificada',
+                    'fontes': 'N/A'
+                })
                 
                 # Cabeçalho com selo de confiabilidade
                 col_header, col_selo = st.columns([4, 1])
                 
                 with col_header:
-                    st.markdown(f"### {insight['tipo']}")
+                    st.markdown(f"### {insight.get('tipo', 'Análise')}")
                 
                 with col_selo:
                     if conf.get('nivel') == 'ALTA':
@@ -910,7 +931,7 @@ def main():
                         st.error(f"{conf.get('emoji', '❌')} BAIXA")
                 
                 # Conteúdo
-                st.info(insight['texto'])
+                st.info(insight.get('texto', 'Sem informações'))
                 
                 # Detalhes da confiabilidade
                 with st.expander("📊 Detalhes de Confiabilidade"):

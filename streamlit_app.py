@@ -84,6 +84,7 @@ def consultar_cep(cep: str):
                 'uf': data.get('state'),
                 'municipio': data.get('city'),
                 'bairro': data.get('neighborhood'),
+                'logradouro': data.get('street'),
                 'status': 'success'
             }
         return {'status': 'not_found'}
@@ -92,7 +93,6 @@ def consultar_cep(cep: str):
 
 def consultar_fipe(marca: str, modelo: str):
     try:
-        # Busca tabela atual
         url_tabelas = f"{BASE_URL_BRASILAPI}/fipe/tabelas/v1"
         resp_tab = requests.get(url_tabelas, timeout=10)
         if resp_tab.status_code != 200:
@@ -101,7 +101,6 @@ def consultar_fipe(marca: str, modelo: str):
         tabelas = resp_tab.json()
         tabela_ref = str(tabelas[-1]['codigo'])
         
-        # Busca marcas
         url_marcas = f"{BASE_URL_BRASILAPI}/fipe/marcas/v1/carros"
         resp_marcas = requests.get(url_marcas, params={'tabela_referencia': tabela_ref}, timeout=10)
         if resp_marcas.status_code != 200:
@@ -116,9 +115,8 @@ def consultar_fipe(marca: str, modelo: str):
                 break
         
         if not codigo_marca:
-            return {'status': 'not_found', 'message': 'Marca não encontrada'}
+            return {'status': 'not_found'}
         
-        # Busca modelos
         url_modelos = f"{BASE_URL_BRASILAPI}/fipe/marcas/{codigo_marca}/modelos"
         resp_mod = requests.get(url_modelos, params={'tabela_referencia': tabela_ref}, timeout=10)
         if resp_mod.status_code != 200:
@@ -133,9 +131,8 @@ def consultar_fipe(marca: str, modelo: str):
                 break
         
         if not codigo_fipe:
-            return {'status': 'not_found', 'message': 'Modelo não encontrado'}
+            return {'status': 'not_found'}
         
-        # Busca preço
         url_preco = f"{BASE_URL_BRASILAPI}/fipe/preco/v1/{codigo_fipe}"
         resp_preco = requests.get(url_preco, params={'tabela_referencia': tabela_ref}, timeout=10)
         if resp_preco.status_code != 200:
@@ -160,14 +157,15 @@ def consultar_fipe(marca: str, modelo: str):
 # ================================
 def consultar_tavily(query: str, api_key: str) -> Optional[Dict]:
     try:
+        query_pt = f"{query} Brasil Portuguese"
+        
         payload = {
             "api_key": api_key,
-            "query": query,
+            "query": query_pt,
             "search_depth": "basic",
             "include_answer": True,
-            "max_results": 5,  # Aumentado para mais contexto
-            "include_domains": [],
-            "exclude_domains": ["facebook.com", "instagram.com", "twitter.com"]  # Evita redes sociais
+            "max_results": 5,
+            "exclude_domains": ["facebook.com", "instagram.com", "twitter.com"]
         }
         
         response = requests.post(TAVILY_API_URL, json=payload, timeout=15)
@@ -183,316 +181,199 @@ def consultar_tavily(query: str, api_key: str) -> Optional[Dict]:
     except:
         return {'status': 'error'}
 
-# ================================
-# ANÁLISES TAVILY
-# ================================
-def analisar_veiculo_recalls(marca: str, modelo: str, ano: str, api_key: str) -> Dict:
-    query = f"recall {marca} {modelo} {ano} Brasil Procon defeitos problemas"
-    resultado = consultar_tavily(query, api_key)
-    
+def calcular_confiabilidade(resultado: Dict, dominios_confiaveis: list) -> Dict:
     if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+        return {'nivel': 'BAIXA', 'cor': 'red', 'emoji': '❌', 'motivo': 'Erro na consulta', 'fontes': '0/0'}
     
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['recall crítico', 'defeito grave', 'risco']):
-        ajuste = -8
-        reasons.append(f"{marca} {modelo} com recall crítico (-8 pts)")
-    elif 'recall' in answer:
-        ajuste = -3
-        reasons.append(f"{marca} {modelo} possui recall ativo (-3 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_veiculo_seguranca(marca: str, modelo: str, ano: str, api_key: str) -> Dict:
-    query = f"Latin NCAP {marca} {modelo} {ano} crash test estrelas segurança"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if '5 estrelas' in answer:
-        ajuste = 5
-        reasons.append(f"{marca} {modelo} - 5 estrelas Latin NCAP (+5 pts)")
-    elif '4 estrelas' in answer:
-        ajuste = 3
-        reasons.append(f"{marca} {modelo} - 4 estrelas Latin NCAP (+3 pts)")
-    elif any(palavra in answer for palavra in ['2 estrelas', '1 estrela']):
-        ajuste = -5
-        reasons.append(f"{marca} {modelo} - baixa avaliação de segurança (-5 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_veiculo_roubado(marca: str, modelo: str, api_key: str) -> Dict:
-    query = f"ranking veículos mais roubados Brasil 2024 {marca} {modelo}"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    modelo_lower = modelo.lower()
-    ajuste = 0
-    reasons = []
-    
-    if modelo_lower in answer:
-        if any(palavra in answer for palavra in ['primeiro', 'top 5', 'mais roubado']):
-            ajuste = -10
-            reasons.append(f"{marca} {modelo} entre os MAIS roubados (-10 pts)")
-        elif 'top 10' in answer:
-            ajuste = -5
-            reasons.append(f"{marca} {modelo} em ranking de roubos (-5 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_custo_manutencao(marca: str, modelo: str, api_key: str) -> Dict:
-    query = f"custo manutenção {marca} {modelo} preço peças oficina confiabilidade Brasil"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['custo elevado', 'caro', 'peças caras']):
-        ajuste = -5
-        reasons.append(f"{marca} {modelo} - alto custo de manutenção (-5 pts)")
-    elif any(palavra in answer for palavra in ['econômico', 'barato', 'baixo custo']):
-        ajuste = 2
-        reasons.append(f"{marca} {modelo} - manutenção econômica (+2 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_acidentes_regiao(municipio: str, uf: str, api_key: str) -> Dict:
-    query = f"estatísticas acidentes trânsito {municipio} {uf} 2024 DETRAN"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['alto índice', 'muitos acidentes']):
-        ajuste = -10
-        reasons.append(f"{municipio}/{uf} - alto índice de acidentes (-10 pts)")
-    elif 'moderado' in answer:
-        ajuste = -5
-        reasons.append(f"{municipio}/{uf} - índice moderado de acidentes (-5 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_criminalidade_regiao(municipio: str, uf: str, api_key: str) -> Dict:
-    query = f"taxa roubo veículos {municipio} {uf} Brasil estatísticas 2024"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['alto índice', 'elevado', 'crítico']):
-        ajuste = -8
-        reasons.append(f"{municipio}/{uf} - alto índice de roubo de veículos (-8 pts)")
-    elif 'moderado' in answer:
-        ajuste = -5
-        reasons.append(f"{municipio}/{uf} - índice moderado de criminalidade (-5 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_qualidade_vias(municipio: str, uf: str, api_key: str) -> Dict:
-    query = f"condição estradas rodovias {municipio} {uf} buracos pavimentação 2024"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['péssima', 'buracos', 'má conservação']):
-        ajuste = -6
-        reasons.append(f"{municipio}/{uf} - vias em más condições (-6 pts)")
-    elif any(palavra in answer for palavra in ['regular', 'necessita melhorias']):
-        ajuste = -3
-        reasons.append(f"{municipio}/{uf} - infraestrutura viária regular (-3 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_fiscalizacao(municipio: str, uf: str, api_key: str) -> Dict:
-    query = f"radares fiscalização trânsito {municipio} {uf} operação lei seca 2024"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['intensa fiscalização', 'muitos radares']):
-        ajuste = 4
-        reasons.append(f"{municipio}/{uf} - fiscalização intensa (+4 pts)")
-    elif any(palavra in answer for palavra in ['pouca fiscalização', 'falta de radares']):
-        ajuste = -2
-        reasons.append(f"{municipio}/{uf} - fiscalização deficiente (-2 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_densidade_frota(municipio: str, uf: str, api_key: str) -> Dict:
-    query = f"frota veículos {municipio} {uf} DETRAN densidade congestionamento 2024"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['alta densidade', 'congestionamento', 'muitos veículos']):
-        ajuste = -5
-        reasons.append(f"{municipio}/{uf} - alta densidade de veículos (-5 pts)")
-    elif any(palavra in answer for palavra in ['crescimento da frota']):
-        ajuste = -2
-        reasons.append(f"{municipio}/{uf} - crescimento acelerado da frota (-2 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-def analisar_saude_empresa(razao_social: str, cnpj: str, api_key: str) -> Dict:
-    query = f"{razao_social} CNPJ {cnpj} falência recuperação judicial 2024"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if any(palavra in answer for palavra in ['falência', 'recuperação judicial']):
-        ajuste = -10
-        reasons.append(f"Empresa em situação financeira crítica (-10 pts)")
-    elif 'dívidas' in answer:
-        ajuste = -5
-        reasons.append(f"Empresa com dificuldades financeiras (-5 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
-
-# ================================
-# ANÁLISES TAVILY - CONDUTOR
-# ================================
-def analisar_perfil_profissional(nome: str, api_key: str) -> Dict:
-    query = f"{nome} LinkedIn profissional cargo empresa Brasil"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
     results = resultado.get('results', [])
     
-    # Verifica se há fontes confiáveis (LinkedIn, empresas conhecidas)
-    fontes_confiaveis = any('linkedin.com' in r.get('url', '') for r in results)
+    if not results:
+        return {'nivel': 'BAIXA', 'cor': 'red', 'emoji': '❌', 'motivo': 'Nenhuma fonte encontrada', 'fontes': '0/0'}
     
-    ajuste = 0
-    reasons = []
+    fontes_confiaveis = 0
+    total_fontes = len(results)
     
-    # IMPORTANTE: Só aplica ajuste se tiver fonte confiável
-    if fontes_confiaveis:
-        if any(palavra in answer for palavra in ['executivo', 'diretor', 'gerente']):
-            ajuste = 5
-            reasons.append(f"Perfil profissional sólido identificado (+5 pts)")
-        elif any(palavra in answer for palavra in ['empresário', 'ceo']):
-            ajuste = 3
-            reasons.append(f"Perfil empreendedor identificado (+3 pts)")
+    for result in results:
+        url = result.get('url', '').lower()
+        if any(dominio in url for dominio in dominios_confiaveis):
+            fontes_confiaveis += 1
     
-    # Adiciona aviso se não houver fontes
-    resumo_final = resultado.get('answer', '')[:250]
-    if not fontes_confiaveis and resumo_final:
-        resumo_final = "⚠️ INFORMAÇÃO NÃO VERIFICADA - Nenhuma fonte oficial encontrada. " + resumo_final
+    percentual = (fontes_confiaveis / total_fontes) * 100 if total_fontes > 0 else 0
     
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resumo_final}
-
-def analisar_processos_judiciais(nome: str, cpf: str, api_key: str) -> Dict:
-    query = f"{nome} CPF {cpf} processos judiciais tribunal condenação fraude site:jus.br OR site:gov.br"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    results = resultado.get('results', [])
-    
-    # Verifica se há fontes oficiais (.gov.br, .jus.br)
-    fontes_oficiais = any(
-        any(dominio in r.get('url', '') for dominio in ['.gov.br', '.jus.br', 'cnj.jus.br'])
-        for r in results
-    )
-    
-    ajuste = 0
-    reasons = []
-    
-    # CRÍTICO: Só aplica penalização se for de fonte oficial
-    if fontes_oficiais:
-        if any(palavra in answer for palavra in ['condenação', 'fraude', 'estelionato']):
-            ajuste = -20
-            reasons.append(f"ALERTA - Histórico de processos graves (-20 pts)")
-        elif any(palavra in answer for palavra in ['processo', 'ação judicial']):
-            ajuste = -5
-            reasons.append(f"Processos judiciais identificados (-5 pts)")
-    
-    resumo_final = resultado.get('answer', '')[:250]
-    if not fontes_oficiais and resumo_final:
-        resumo_final = "⚠️ INFORMAÇÃO NÃO VERIFICADA - Nenhum registro oficial encontrado. " + resumo_final
-    elif not resumo_final:
-        resumo_final = "✅ Nenhum processo judicial encontrado em bases públicas."
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resumo_final}
-
-def analisar_sancoes_governo(nome: str, cpf: str, api_key: str) -> Dict:
-    query = f"{nome} CPF {cpf} CEIS CNEP sanções site:portaldatransparencia.gov.br"
-    resultado = consultar_tavily(query, api_key)
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
-    
-    answer = resultado.get('answer', '').lower()
-    results = resultado.get('results', [])
-    
-    # Verifica fonte oficial (Portal da Transparência)
-    fonte_oficial = any('portaldatransparencia.gov.br' in r.get('url', '') for r in results)
-    
-    ajuste = 0
-    reasons = []
-    
-    if fonte_oficial:
-        if any(palavra in answer for palavra in ['sanção', 'cnep', 'ceis', 'improbidade']):
-            ajuste = -15
-            reasons.append(f"ALERTA - Sanções administrativas identificadas (-15 pts)")
-    
-    resumo_final = resultado.get('answer', '')[:250]
-    if not fonte_oficial and resumo_final:
-        resumo_final = "⚠️ INFORMAÇÃO NÃO VERIFICADA - Consulte diretamente o Portal da Transparência. " + resumo_final
-    elif not resumo_final:
-        resumo_final = "✅ Nenhuma sanção encontrada em bases públicas."
-    
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resumo_final}
+    if percentual >= 60:
+        return {
+            'nivel': 'ALTA',
+            'cor': 'green',
+            'emoji': '✅',
+            'motivo': 'Maioria de fontes oficiais',
+            'fontes': f'{fontes_confiaveis}/{total_fontes} fontes confiáveis'
+        }
+    elif percentual >= 30:
+        return {
+            'nivel': 'MÉDIA',
+            'cor': 'orange',
+            'emoji': '⚠️',
+            'motivo': 'Algumas fontes oficiais',
+            'fontes': f'{fontes_confiaveis}/{total_fontes} fontes confiáveis'
+        }
+    else:
+        return {
+            'nivel': 'BAIXA',
+            'cor': 'red',
+            'emoji': '❌',
+            'motivo': 'Poucas fontes oficiais',
+            'fontes': f'{fontes_confiaveis}/{total_fontes} fontes confiáveis'
+        }
 
 # ================================
-# CÁLCULO DE AJUSTES BRASILAPI
+# ANÁLISES TAVILY - VEICULARES
+# ================================
+def analisar_veiculo_tavily(marca: str, modelo: str, ano: str, api_key: str, tipo: str):
+    queries = {
+        'recalls': f"recall {marca} {modelo} {ano} Procon defeitos",
+        'custo': f"custo manutenção {marca} {modelo} preço peças",
+        'seguranca': f"Latin NCAP {marca} {modelo} {ano} crash test estrelas",
+        'roubos': f"ranking veículos roubados 2024 {marca} {modelo}"
+    }
+    
+    dominios = {
+        'recalls': ['procon.', '.gov.br', 'inmetro.gov.br'],
+        'custo': ['quatrorodas.com', 'autoesporte.com'],
+        'seguranca': ['latinncap.com', 'autoesporte.com'],
+        'roubos': ['.gov.br', 'ssp.', 'policia']
+    }
+    
+    resultado = consultar_tavily(queries[tipo], api_key)
+    confiabilidade = calcular_confiabilidade(resultado, dominios[tipo])
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': '', 'confiabilidade': confiabilidade}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if confiabilidade['nivel'] in ['ALTA', 'MÉDIA']:
+        if tipo == 'recalls':
+            if 'recall crítico' in answer or 'defeito grave' in answer:
+                ajuste = -8
+                reasons.append(f"{marca} {modelo} com recall crítico (-8 pts)")
+            elif 'recall' in answer:
+                ajuste = -3
+                reasons.append(f"{marca} {modelo} possui recall ativo (-3 pts)")
+        
+        elif tipo == 'custo':
+            if 'custo elevado' in answer or 'caro' in answer:
+                ajuste = -5
+                reasons.append(f"{marca} {modelo} - alto custo de manutenção (-5 pts)")
+            elif 'econômico' in answer or 'barato' in answer:
+                ajuste = 2
+                reasons.append(f"{marca} {modelo} - manutenção econômica (+2 pts)")
+        
+        elif tipo == 'seguranca':
+            if '5 estrelas' in answer:
+                ajuste = 5
+                reasons.append(f"{marca} {modelo} - 5 estrelas Latin NCAP (+5 pts)")
+            elif '4 estrelas' in answer:
+                ajuste = 3
+                reasons.append(f"{marca} {modelo} - 4 estrelas Latin NCAP (+3 pts)")
+            elif '2 estrelas' in answer or '1 estrela' in answer:
+                ajuste = -5
+                reasons.append(f"{marca} {modelo} - baixa segurança (-5 pts)")
+        
+        elif tipo == 'roubos':
+            if modelo.lower() in answer:
+                if 'top 5' in answer or 'mais roubado' in answer:
+                    ajuste = -10
+                    reasons.append(f"{marca} {modelo} entre os MAIS roubados (-10 pts)")
+                elif 'top 10' in answer:
+                    ajuste = -5
+                    reasons.append(f"{marca} {modelo} em ranking de roubos (-5 pts)")
+    
+    return {
+        'ajuste': ajuste,
+        'reasons': reasons,
+        'resumo': resultado.get('answer', '')[:250],
+        'confiabilidade': confiabilidade
+    }
+
+# ================================
+# ANÁLISES TAVILY - REGIONAIS
+# ================================
+def analisar_regiao_tavily(municipio: str, uf: str, api_key: str, tipo: str):
+    queries = {
+        'acidentes': f"estatísticas acidentes trânsito {municipio} {uf} 2024 DETRAN",
+        'vias': f"condição estradas {municipio} {uf} buracos pavimentação",
+        'fiscalizacao': f"radares fiscalização trânsito {municipio} {uf}",
+        'criminalidade': f"taxa roubo veículos {municipio} {uf} 2024",
+        'frota': f"frota veículos {municipio} {uf} DETRAN densidade"
+    }
+    
+    dominios = {
+        'acidentes': ['detran.', '.gov.br', 'dnit.gov.br'],
+        'vias': ['dnit.gov.br', 'cnt.org.br', '.gov.br'],
+        'fiscalizacao': ['detran.', 'policia', '.gov.br'],
+        'criminalidade': ['.gov.br', 'ssp.', 'policia'],
+        'frota': ['detran.', '.gov.br', 'denatran.gov.br']
+    }
+    
+    resultado = consultar_tavily(queries[tipo], api_key)
+    confiabilidade = calcular_confiabilidade(resultado, dominios[tipo])
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': '', 'confiabilidade': confiabilidade}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if confiabilidade['nivel'] in ['ALTA', 'MÉDIA']:
+        if tipo == 'acidentes':
+            if 'alto índice' in answer or 'muitos acidentes' in answer:
+                ajuste = -10
+                reasons.append(f"{municipio}/{uf} - alto índice de acidentes (-10 pts)")
+            elif 'moderado' in answer:
+                ajuste = -5
+                reasons.append(f"{municipio}/{uf} - índice moderado de acidentes (-5 pts)")
+        
+        elif tipo == 'vias':
+            if 'péssima' in answer or 'buracos' in answer:
+                ajuste = -6
+                reasons.append(f"{municipio}/{uf} - vias em más condições (-6 pts)")
+            elif 'regular' in answer:
+                ajuste = -3
+                reasons.append(f"{municipio}/{uf} - infraestrutura regular (-3 pts)")
+        
+        elif tipo == 'fiscalizacao':
+            if 'intensa fiscalização' in answer:
+                ajuste = 4
+                reasons.append(f"{municipio}/{uf} - fiscalização intensa (+4 pts)")
+            elif 'pouca fiscalização' in answer:
+                ajuste = -2
+                reasons.append(f"{municipio}/{uf} - fiscalização deficiente (-2 pts)")
+        
+        elif tipo == 'criminalidade':
+            if 'alto índice' in answer or 'crítico' in answer:
+                ajuste = -8
+                reasons.append(f"{municipio}/{uf} - alto índice de roubo de veículos (-8 pts)")
+            elif 'moderado' in answer:
+                ajuste = -5
+                reasons.append(f"{municipio}/{uf} - criminalidade moderada (-5 pts)")
+        
+        elif tipo == 'frota':
+            if 'alta densidade' in answer or 'congestionamento' in answer:
+                ajuste = -5
+                reasons.append(f"{municipio}/{uf} - alta densidade de veículos (-5 pts)")
+    
+    return {
+        'ajuste': ajuste,
+        'reasons': reasons,
+        'resumo': resultado.get('answer', '')[:250],
+        'confiabilidade': confiabilidade
+    }
+
+# ================================
+# AJUSTES BRASILAPI
 # ================================
 def calcular_ajuste_cnpj(dados_cnpj):
     if dados_cnpj.get('status') != 'success':
@@ -562,16 +443,12 @@ def main():
         else:
             st.warning("⚠️ Tavily não configurada")
     
-    # Formulário Principal
+    # Formulário
     st.header("📋 Dados para Análise")
     
-    # CEP
-    cep_input = st.text_input("CEP", placeholder="00000-000", help="Para análise de risco regional")
+    cep_input = st.text_input("CEP", placeholder="00000-000")
+    cnpj_input = st.text_input("CNPJ Empregador (Opcional)", placeholder="00.000.000/0000-00")
     
-    # CNPJ
-    cnpj_input = st.text_input("CNPJ Empregador (Opcional)", placeholder="00.000.000/0000-00", help="Análise empresarial")
-    
-    # Veículo
     st.subheader("🚗 Dados do Veículo")
     col1, col2, col3 = st.columns(3)
     
@@ -582,7 +459,7 @@ def main():
     with col3:
         ano_input = st.text_input("Ano", placeholder="Ex: 2020")
     
-    # Botão de análise
+    # Botão
     if st.button("🚀 Analisar Risco", type="primary", use_container_width=True):
         
         if not cep_input:
@@ -592,14 +469,13 @@ def main():
         with st.spinner("🔄 Processando análise..."):
             progress_bar = st.progress(0)
             
-            # Inicializa resultados
             score_base = 70.0
             ajuste_total = 0
             todas_reasons = []
             dados_brasilapi = {}
             insights_tavily = []
             
-            # 1. CEP
+            # CEP
             st.info("📍 Consultando CEP...")
             progress_bar.progress(20)
             
@@ -607,7 +483,7 @@ def main():
             if dados_cep.get('status') == 'success':
                 dados_brasilapi['cep'] = dados_cep
             
-            # 2. CNPJ
+            # CNPJ
             if cnpj_input:
                 st.info("🏢 Consultando CNPJ...")
                 progress_bar.progress(30)
@@ -619,7 +495,7 @@ def main():
                     ajuste_total += ajuste_cnpj['ajuste']
                     todas_reasons.extend(ajuste_cnpj['reasons'])
             
-            # 3. FIPE
+            # FIPE
             if marca_input and modelo_input:
                 st.info("🚗 Consultando FIPE...")
                 progress_bar.progress(40)
@@ -633,7 +509,7 @@ def main():
             
             progress_bar.progress(50)
             
-            # 4. TAVILY
+            # TAVILY
             tavily_key = st.secrets.get("TAVILY_API_KEY")
             
             if tavily_key:
@@ -643,225 +519,57 @@ def main():
                 if marca_input and modelo_input:
                     ano = ano_input if ano_input else '2020'
                     
-                    # Recalls
-                    st.caption("🔧 Analisando recalls...")
-                    analise = analisar_veiculo_recalls(marca_input, modelo_input, ano, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '🔧 Recalls',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                    tipos_veiculo = [
+                        ('recalls', '🔧 Recalls'),
+                        ('custo', '💰 Custo Manutenção'),
+                        ('seguranca', '🛡️ Segurança'),
+                        ('roubos', '🚨 Ranking Roubos')
+                    ]
+                    
+                    for idx, (tipo, nome) in enumerate(tipos_veiculo):
+                        st.caption(f"Analisando {nome.lower()}...")
+                        analise = analisar_veiculo_tavily(marca_input, modelo_input, ano, tavily_key, tipo)
+                        ajuste_total += analise.get('ajuste', 0)
+                        todas_reasons.extend(analise.get('reasons', []))
+                        if analise.get('resumo'):
+                            insights_tavily.append({
+                                'tipo': nome,
+                                'texto': analise['resumo'],
+                                'confiabilidade': analise.get('confiabilidade', {})
                             })
-                        })
-                    
-                    progress_bar.progress(55)
-                    
-                    # Custo Manutenção
-                    st.caption("💰 Analisando custo de manutenção...")
-                    analise = analisar_custo_manutencao(marca_input, modelo_input, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '💰 Custo Manutenção',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
-                            })
-                        })
-                    
-                    progress_bar.progress(60)
-                    
-                    # Segurança
-                    st.caption("🛡️ Analisando segurança...")
-                    analise = analisar_veiculo_seguranca(marca_input, modelo_input, ano, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '🛡️ Segurança',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
-                            })
-                        })
-                    
-                    progress_bar.progress(65)
-                    
-                    # Roubos
-                    st.caption("🚨 Verificando ranking de roubos...")
-                    analise = analisar_veiculo_roubado(marca_input, modelo_input, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '🚨 Ranking Roubos',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
-                            })
-                        })
+                        progress_bar.progress(50 + (idx + 1) * 3)
                 
                 # Análises Regionais
                 if dados_cep.get('status') == 'success':
                     municipio = dados_cep.get('municipio', '')
                     uf = dados_cep.get('uf', '')
                     
-                    progress_bar.progress(70)
+                    tipos_regiao = [
+                        ('acidentes', '🚗 Acidentes Trânsito'),
+                        ('vias', '🛣️ Qualidade das Vias'),
+                        ('fiscalizacao', '🚔 Fiscalização'),
+                        ('criminalidade', '⚠️ Criminalidade'),
+                        ('frota', '🚙 Densidade de Frota')
+                    ]
                     
-                    # Acidentes
-                    st.caption("🚗 Analisando acidentes...")
-                    analise = analisar_acidentes_regiao(municipio, uf, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '🚗 Acidentes Trânsito',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                    for idx, (tipo, nome) in enumerate(tipos_regiao):
+                        st.caption(f"Analisando {nome.lower()}...")
+                        analise = analisar_regiao_tavily(municipio, uf, tavily_key, tipo)
+                        ajuste_total += analise.get('ajuste', 0)
+                        todas_reasons.extend(analise.get('reasons', []))
+                        if analise.get('resumo'):
+                            insights_tavily.append({
+                                'tipo': nome,
+                                'texto': analise['resumo'],
+                                'confiabilidade': analise.get('confiabilidade', {})
                             })
-                        })
-                    
-                    progress_bar.progress(75)
-                    
-                    # Qualidade das Vias
-                    st.caption("🛣️ Analisando qualidade das vias...")
-                    analise = analisar_qualidade_vias(municipio, uf, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '🛣️ Qualidade das Vias',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
-                            })
-                        })
-                    
-                    progress_bar.progress(80)
-                    
-                    # Fiscalização
-                    st.caption("🚔 Analisando fiscalização...")
-                    analise = analisar_fiscalizacao(municipio, uf, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '🚔 Fiscalização e Radares',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
-                            })
-                        })
-                    
-                    progress_bar.progress(83)
-                    
-                    # Criminalidade
-                    st.caption("⚠️ Analisando criminalidade...")
-                    analise = analisar_criminalidade_regiao(municipio, uf, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '⚠️ Criminalidade',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
-                            })
-                        })
-                    
-                    progress_bar.progress(86)
-                    
-                    # Densidade de Frota
-                    st.caption("🚙 Analisando densidade de frota...")
-                    analise = analisar_densidade_frota(municipio, uf, tavily_key)
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '🚙 Densidade de Frota',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
-                            })
-                        })
-                
-                # Análise Empresarial
-                if cnpj_input and dados_cnpj.get('status') == 'success':
-                    progress_bar.progress(90)
-                    
-                    st.caption("💼 Analisando empresa...")
-                    analise = analisar_saude_empresa(
-                        dados_cnpj.get('razao_social', ''),
-                        dados_cnpj.get('cnpj', ''),
-                        tavily_key
-                    )
-                    ajuste_total += analise.get('ajuste', 0)
-                    todas_reasons.extend(analise.get('reasons', []))
-                    if analise.get('resumo'):
-                        insights_tavily.append({
-                            'tipo': '💼 Saúde Financeira',
-                            'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {
-                                'nivel': 'MÉDIA',
-                                'cor': 'orange',
-                                'emoji': '⚠️',
-                                'motivo': 'Análise empresarial',
-                                'fontes': 'N/A'
-                            })
-                        })
-                
-                # Análises do Condutor
-                if cpf_input and nome_input:
-                    progress_bar.progress(92)
-                    
-                    # Perfil Profissional
-                    st.caption("👔 Analisando perfil profissional...")
-                    analise = analisar_perfil_profissional(nome_input, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
-                        insights_tavily.append({'tipo': '👔 Perfil Profissional', 'texto': analise['resumo']})
-                    
-                    progress_bar.progress(94)
-                    
-                    # Processos Judiciais
-                    st.caption("⚖️ Verificando processos judiciais...")
-                    analise = analisar_processos_judiciais(nome_input, cpf_input, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
-                        insights_tavily.append({'tipo': '⚖️ Processos Judiciais', 'texto': analise['resumo']})
-                    
-                    progress_bar.progress(96)
-                    
-                    # Sanções Governamentais
-                    st.caption("📋 Verificando sanções...")
-                    analise = analisar_sancoes_governo(nome_input, cpf_input, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
-                        insights_tavily.append({'tipo': '📋 Sanções Governamentais', 'texto': analise['resumo']})
+                        progress_bar.progress(65 + (idx + 1) * 5)
             
             progress_bar.progress(100)
             
             # Calcula score final
             score_final = max(0, min(100, score_base + ajuste_total))
             
-            # Define banda
             if score_final >= 80:
                 banda = 'MUITO BAIXO'
             elif score_final >= 60:
@@ -890,33 +598,29 @@ def main():
             cor = "🟢" if score_final >= 70 else "🟡" if score_final >= 40 else "🔴"
             st.metric("Status", cor)
         
-        # Fatores de Impacto
+        # Fatores
         if todas_reasons:
             st.subheader("🎯 Fatores de Impacto")
             for i, reason in enumerate(todas_reasons, 1):
                 st.write(f"{i}. {reason}")
         
-        # Insights Tavily com Selo de Confiabilidade
+        # Insights Tavily
         if insights_tavily:
             st.subheader("🧠 Insights Tavily Intelligence")
             
             st.info("""
             **ℹ️ Sobre a Confiabilidade:**
-            - ✅ **ALTA**: Maioria das fontes são oficiais (.gov.br, .org)
-            - ⚠️ **MÉDIA**: Algumas fontes oficiais encontradas
-            - ❌ **BAIXA**: Poucas ou nenhuma fonte oficial
+            - ✅ **ALTA**: Maioria das fontes são oficiais
+            - ⚠️ **MÉDIA**: Algumas fontes oficiais
+            - ❌ **BAIXA**: Poucas fontes oficiais
             """)
             
             for insight in insights_tavily:
                 conf = insight.get('confiabilidade', {
-                    'nivel': 'MÉDIA',
-                    'cor': 'orange',
-                    'emoji': '⚠️',
-                    'motivo': 'Fonte não especificada',
-                    'fontes': 'N/A'
+                    'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                    'motivo': 'N/A', 'fontes': 'N/A'
                 })
                 
-                # Cabeçalho com selo de confiabilidade
                 col_header, col_selo = st.columns([4, 1])
                 
                 with col_header:
@@ -930,10 +634,8 @@ def main():
                     else:
                         st.error(f"{conf.get('emoji', '❌')} BAIXA")
                 
-                # Conteúdo
                 st.info(insight.get('texto', 'Sem informações'))
                 
-                # Detalhes da confiabilidade
                 with st.expander("📊 Detalhes de Confiabilidade"):
                     st.write(f"**Nível:** {conf.get('nivel', 'N/A')}")
                     st.write(f"**Motivo:** {conf.get('motivo', 'N/A')}")
@@ -946,7 +648,7 @@ def main():
             with st.expander("🌐 Dados BrasilAPI"):
                 st.json(dados_brasilapi)
         
-        # Download JSON
+        # Download
         st.subheader("💾 Exportar")
         
         resultado_completo = {

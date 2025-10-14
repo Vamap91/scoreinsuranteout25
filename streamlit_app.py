@@ -310,6 +310,66 @@ def analisar_saude_empresa(razao_social: str, cnpj: str, api_key: str) -> Dict:
     return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
 
 # ================================
+# ANÁLISES TAVILY - CONDUTOR
+# ================================
+def analisar_perfil_profissional(nome: str, api_key: str) -> Dict:
+    query = f"{nome} LinkedIn profissional cargo empresa Brasil"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['executivo', 'diretor', 'gerente']):
+        ajuste = 5
+        reasons.append(f"Perfil profissional sólido identificado (+5 pts)")
+    elif any(palavra in answer for palavra in ['empresário', 'ceo']):
+        ajuste = 3
+        reasons.append(f"Perfil empreendedor identificado (+3 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+
+def analisar_processos_judiciais(nome: str, cpf: str, api_key: str) -> Dict:
+    query = f"{nome} CPF {cpf} processos judiciais tribunal condenação fraude"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['condenação', 'fraude', 'estelionato']):
+        ajuste = -20
+        reasons.append(f"ALERTA - Histórico de processos graves (-20 pts)")
+    elif any(palavra in answer for palavra in ['processo', 'ação judicial']):
+        ajuste = -5
+        reasons.append(f"Processos judiciais identificados (-5 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+
+def analisar_sancoes_governo(nome: str, cpf: str, api_key: str) -> Dict:
+    query = f"{nome} CPF {cpf} CEIS CNEP sanções governo improbidade"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['sanção', 'cnep', 'ceis', 'improbidade']):
+        ajuste = -15
+        reasons.append(f"ALERTA - Sanções administrativas identificadas (-15 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+
+# ================================
 # CÁLCULO DE AJUSTES BRASILAPI
 # ================================
 def calcular_ajuste_cnpj(dados_cnpj):
@@ -383,11 +443,20 @@ def main():
     # Formulário Principal
     st.header("📋 Dados para Análise")
     
+    # Dados do Condutor
+    st.subheader("👤 Dados do Condutor")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        cpf_input = st.text_input("CPF", placeholder="000.000.000-00", help="Para análise de perfil do condutor")
+    with col2:
+        nome_input = st.text_input("Nome Completo", placeholder="João da Silva", help="Nome do condutor")
+    
     # CEP
     cep_input = st.text_input("CEP", placeholder="00000-000", help="Para análise de risco regional")
     
     # CNPJ
-    cnpj_input = st.text_input("CNPJ (Opcional)", placeholder="00.000.000/0000-00", help="Análise empresarial")
+    cnpj_input = st.text_input("CNPJ Empregador (Opcional)", placeholder="00.000.000/0000-00", help="Análise empresarial")
     
     # Veículo
     st.subheader("🚗 Dados do Veículo")
@@ -403,8 +472,8 @@ def main():
     # Botão de análise
     if st.button("🚀 Analisar Risco", type="primary", use_container_width=True):
         
-        if not cep_input:
-            st.error("⚠️ Preencha ao menos o CEP")
+        if not cep_input or not cpf_input or not nome_input:
+            st.error("⚠️ Preencha CPF, Nome e CEP")
             return
         
         with st.spinner("🔄 Processando análise..."):
@@ -534,6 +603,41 @@ def main():
                         todas_reasons.extend(analise['reasons'])
                         if analise['resumo']:
                             insights_tavily.append({'tipo': '💼 Saúde Financeira', 'texto': analise['resumo']})
+                
+                # Análises do Condutor
+                if cpf_input and nome_input:
+                    progress_bar.progress(92)
+                    
+                    # Perfil Profissional
+                    st.caption("👔 Analisando perfil profissional...")
+                    analise = analisar_perfil_profissional(nome_input, tavily_key)
+                    if analise['ajuste'] != 0:
+                        ajuste_total += analise['ajuste']
+                        todas_reasons.extend(analise['reasons'])
+                        if analise['resumo']:
+                            insights_tavily.append({'tipo': '👔 Perfil Profissional', 'texto': analise['resumo']})
+                    
+                    progress_bar.progress(94)
+                    
+                    # Processos Judiciais
+                    st.caption("⚖️ Verificando processos judiciais...")
+                    analise = analisar_processos_judiciais(nome_input, cpf_input, tavily_key)
+                    if analise['ajuste'] != 0:
+                        ajuste_total += analise['ajuste']
+                        todas_reasons.extend(analise['reasons'])
+                        if analise['resumo']:
+                            insights_tavily.append({'tipo': '⚖️ Processos Judiciais', 'texto': analise['resumo']})
+                    
+                    progress_bar.progress(96)
+                    
+                    # Sanções Governamentais
+                    st.caption("📋 Verificando sanções...")
+                    analise = analisar_sancoes_governo(nome_input, cpf_input, tavily_key)
+                    if analise['ajuste'] != 0:
+                        ajuste_total += analise['ajuste']
+                        todas_reasons.extend(analise['reasons'])
+                        if analise['resumo']:
+                            insights_tavily.append({'tipo': '📋 Sanções Governamentais', 'texto': analise['resumo']})
             
             progress_bar.progress(100)
             
@@ -592,6 +696,10 @@ def main():
         
         resultado_completo = {
             'timestamp': datetime.now().isoformat(),
+            'condutor': {
+                'nome': nome_input,
+                'cpf': cpf_input
+            },
             'score': score_final,
             'banda': banda,
             'ajuste_total': ajuste_total,

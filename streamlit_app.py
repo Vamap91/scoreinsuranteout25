@@ -782,13 +782,19 @@ def main():
                         dados_cnpj.get('cnpj', ''),
                         tavily_key
                     )
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '💼 Saúde Financeira',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise.get('confiabilidade', {'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️'})
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA',
+                                'cor': 'orange',
+                                'emoji': '⚠️',
+                                'motivo': 'Análise empresarial',
+                                'fontes': 'N/A'
+                            })
                         })
                 
                 # Análises do Condutor

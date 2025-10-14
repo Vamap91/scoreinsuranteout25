@@ -565,15 +565,6 @@ def main():
     # Formulário Principal
     st.header("📋 Dados para Análise")
     
-    # Dados do Condutor
-    st.subheader("👤 Dados do Condutor")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        cpf_input = st.text_input("CPF", placeholder="000.000.000-00", help="Para análise de perfil do condutor")
-    with col2:
-        nome_input = st.text_input("Nome Completo", placeholder="João da Silva", help="Nome do condutor")
-    
     # CEP
     cep_input = st.text_input("CEP", placeholder="00000-000", help="Para análise de risco regional")
     
@@ -594,8 +585,8 @@ def main():
     # Botão de análise
     if st.button("🚀 Analisar Risco", type="primary", use_container_width=True):
         
-        if not cep_input or not cpf_input or not nome_input:
-            st.error("⚠️ Preencha CPF, Nome e CEP")
+        if not cep_input:
+            st.error("⚠️ Preencha o CEP")
             return
         
         with st.spinner("🔄 Processando análise..."):
@@ -658,7 +649,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '🔧 Recalls', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '🔧 Recalls',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                     
                     progress_bar.progress(55)
                     
@@ -668,7 +663,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '💰 Custo Manutenção', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '💰 Custo Manutenção',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                     
                     progress_bar.progress(60)
                     
@@ -678,7 +677,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '🛡️ Segurança', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '🛡️ Segurança',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                     
                     progress_bar.progress(65)
                     
@@ -688,7 +691,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '🚨 Ranking Roubos', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '🚨 Ranking Roubos',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                 
                 # Análises Regionais
                 if dados_cep.get('status') == 'success':
@@ -703,7 +710,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '🚗 Acidentes Trânsito', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '🚗 Acidentes Trânsito',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                     
                     progress_bar.progress(75)
                     
@@ -713,7 +724,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '🛣️ Qualidade das Vias', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '🛣️ Qualidade das Vias',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                     
                     progress_bar.progress(80)
                     
@@ -723,7 +738,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '🚔 Fiscalização e Radares', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '🚔 Fiscalização e Radares',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                     
                     progress_bar.progress(83)
                     
@@ -733,7 +752,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '⚠️ Criminalidade', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '⚠️ Criminalidade',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                     
                     progress_bar.progress(86)
                     
@@ -743,7 +766,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '🚙 Densidade de Frota', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '🚙 Densidade de Frota',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise['confiabilidade']
+                        })
                 
                 # Análise Empresarial
                 if cnpj_input and dados_cnpj.get('status') == 'success':
@@ -758,7 +785,11 @@ def main():
                     ajuste_total += analise['ajuste']
                     todas_reasons.extend(analise['reasons'])
                     if analise['resumo']:
-                        insights_tavily.append({'tipo': '💼 Saúde Financeira', 'texto': analise['resumo']})
+                        insights_tavily.append({
+                            'tipo': '💼 Saúde Financeira',
+                            'texto': analise['resumo'],
+                            'confiabilidade': analise.get('confiabilidade', {'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️'})
+                        })
                 
                 # Análises do Condutor
                 if cpf_input and nome_input:
@@ -832,32 +863,44 @@ def main():
             for i, reason in enumerate(todas_reasons, 1):
                 st.write(f"{i}. {reason}")
         
-        # Insights Tavily
+        # Insights Tavily com Selo de Confiabilidade
         if insights_tavily:
             st.subheader("🧠 Insights Tavily Intelligence")
             
-            st.warning("""
-            ⚠️ **AVISO IMPORTANTE SOBRE PRECISÃO:**
-            
-            As análises Tavily são baseadas em buscas na internet e podem conter:
-            - ❌ Informações desatualizadas
-            - ❌ Dados incorretos ou de fontes não oficiais
-            - ❌ Confusão entre pessoas com nomes similares
-            
-            **Recomendações:**
-            - ✅ Use apenas como **indicativo complementar**
-            - ✅ Sempre verifique em fontes oficiais (.gov.br, .jus.br)
-            - ✅ Não tome decisões baseadas apenas nestes dados
-            - ✅ Consulte bases oficiais: DETRAN, Tribunais, Portal da Transparência
-            
-            **Para dados pessoais sensíveis (processos, sanções):**
-            - Só são considerados se houver fonte oficial
-            - Informações não verificadas são sinalizadas com ⚠️
+            st.info("""
+            **ℹ️ Sobre a Confiabilidade:**
+            - ✅ **ALTA**: Maioria das fontes são oficiais (.gov.br, .org)
+            - ⚠️ **MÉDIA**: Algumas fontes oficiais encontradas
+            - ❌ **BAIXA**: Poucas ou nenhuma fonte oficial
             """)
             
             for insight in insights_tavily:
-                with st.expander(f"{insight['tipo']}", expanded=False):
-                    st.info(insight['texto'])
+                conf = insight.get('confiabilidade', {})
+                
+                # Cabeçalho com selo de confiabilidade
+                col_header, col_selo = st.columns([4, 1])
+                
+                with col_header:
+                    st.markdown(f"### {insight['tipo']}")
+                
+                with col_selo:
+                    if conf.get('nivel') == 'ALTA':
+                        st.success(f"{conf.get('emoji', '✅')} ALTA")
+                    elif conf.get('nivel') == 'MÉDIA':
+                        st.warning(f"{conf.get('emoji', '⚠️')} MÉDIA")
+                    else:
+                        st.error(f"{conf.get('emoji', '❌')} BAIXA")
+                
+                # Conteúdo
+                st.info(insight['texto'])
+                
+                # Detalhes da confiabilidade
+                with st.expander("📊 Detalhes de Confiabilidade"):
+                    st.write(f"**Nível:** {conf.get('nivel', 'N/A')}")
+                    st.write(f"**Motivo:** {conf.get('motivo', 'N/A')}")
+                    st.write(f"**Fontes:** {conf.get('fontes', 'N/A')}")
+                
+                st.markdown("---")
         
         # Dados BrasilAPI
         if dados_brasilapi:
@@ -869,10 +912,6 @@ def main():
         
         resultado_completo = {
             'timestamp': datetime.now().isoformat(),
-            'condutor': {
-                'nome': nome_input,
-                'cpf': cpf_input
-            },
             'score': score_final,
             'banda': banda,
             'ajuste_total': ajuste_total,

@@ -249,6 +249,26 @@ def analisar_veiculo_roubado(marca: str, modelo: str, api_key: str) -> Dict:
     
     return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
 
+def analisar_custo_manutencao(marca: str, modelo: str, api_key: str) -> Dict:
+    query = f"custo manutenção {marca} {modelo} preço peças oficina confiabilidade Brasil"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['custo elevado', 'caro', 'peças caras']):
+        ajuste = -5
+        reasons.append(f"{marca} {modelo} - alto custo de manutenção (-5 pts)")
+    elif any(palavra in answer for palavra in ['econômico', 'barato', 'baixo custo']):
+        ajuste = 2
+        reasons.append(f"{marca} {modelo} - manutenção econômica (+2 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+
 def analisar_acidentes_regiao(municipio: str, uf: str, api_key: str) -> Dict:
     query = f"estatísticas acidentes trânsito {municipio} {uf} 2024 DETRAN"
     resultado = consultar_tavily(query, api_key)
@@ -286,6 +306,66 @@ def analisar_criminalidade_regiao(municipio: str, uf: str, api_key: str) -> Dict
     elif 'moderado' in answer:
         ajuste = -5
         reasons.append(f"{municipio}/{uf} - índice moderado de criminalidade (-5 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+
+def analisar_qualidade_vias(municipio: str, uf: str, api_key: str) -> Dict:
+    query = f"condição estradas rodovias {municipio} {uf} buracos pavimentação 2024"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['péssima', 'buracos', 'má conservação']):
+        ajuste = -6
+        reasons.append(f"{municipio}/{uf} - vias em más condições (-6 pts)")
+    elif any(palavra in answer for palavra in ['regular', 'necessita melhorias']):
+        ajuste = -3
+        reasons.append(f"{municipio}/{uf} - infraestrutura viária regular (-3 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+
+def analisar_fiscalizacao(municipio: str, uf: str, api_key: str) -> Dict:
+    query = f"radares fiscalização trânsito {municipio} {uf} operação lei seca 2024"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['intensa fiscalização', 'muitos radares']):
+        ajuste = 4
+        reasons.append(f"{municipio}/{uf} - fiscalização intensa (+4 pts)")
+    elif any(palavra in answer for palavra in ['pouca fiscalização', 'falta de radares']):
+        ajuste = -2
+        reasons.append(f"{municipio}/{uf} - fiscalização deficiente (-2 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+
+def analisar_densidade_frota(municipio: str, uf: str, api_key: str) -> Dict:
+    query = f"frota veículos {municipio} {uf} DETRAN densidade congestionamento 2024"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['alta densidade', 'congestionamento', 'muitos veículos']):
+        ajuste = -5
+        reasons.append(f"{municipio}/{uf} - alta densidade de veículos (-5 pts)")
+    elif any(palavra in answer for palavra in ['crescimento da frota']):
+        ajuste = -2
+        reasons.append(f"{municipio}/{uf} - crescimento acelerado da frota (-2 pts)")
     
     return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
 
@@ -538,6 +618,16 @@ def main():
                     if analise['resumo']:
                         insights_tavily.append({'tipo': '🔧 Recalls', 'texto': analise['resumo']})
                     
+                    progress_bar.progress(55)
+                    
+                    # Custo Manutenção
+                    st.caption("💰 Analisando custo de manutenção...")
+                    analise = analisar_custo_manutencao(marca_input, modelo_input, tavily_key)
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '💰 Custo Manutenção', 'texto': analise['resumo']})
+                    
                     progress_bar.progress(60)
                     
                     # Segurança
@@ -548,7 +638,7 @@ def main():
                     if analise['resumo']:
                         insights_tavily.append({'tipo': '🛡️ Segurança', 'texto': analise['resumo']})
                     
-                    progress_bar.progress(70)
+                    progress_bar.progress(65)
                     
                     # Roubos
                     st.caption("🚨 Verificando ranking de roubos...")
@@ -563,27 +653,55 @@ def main():
                     municipio = dados_cep.get('municipio', '')
                     uf = dados_cep.get('uf', '')
                     
-                    progress_bar.progress(80)
+                    progress_bar.progress(70)
                     
                     # Acidentes
                     st.caption("🚗 Analisando acidentes...")
                     analise = analisar_acidentes_regiao(municipio, uf, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '🚗 Acidentes Trânsito', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '🚗 Acidentes Trânsito', 'texto': analise['resumo']})
                     
-                    progress_bar.progress(85)
+                    progress_bar.progress(75)
+                    
+                    # Qualidade das Vias
+                    st.caption("🛣️ Analisando qualidade das vias...")
+                    analise = analisar_qualidade_vias(municipio, uf, tavily_key)
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '🛣️ Qualidade das Vias', 'texto': analise['resumo']})
+                    
+                    progress_bar.progress(80)
+                    
+                    # Fiscalização
+                    st.caption("🚔 Analisando fiscalização...")
+                    analise = analisar_fiscalizacao(municipio, uf, tavily_key)
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '🚔 Fiscalização e Radares', 'texto': analise['resumo']})
+                    
+                    progress_bar.progress(83)
                     
                     # Criminalidade
                     st.caption("⚠️ Analisando criminalidade...")
                     analise = analisar_criminalidade_regiao(municipio, uf, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '⚠️ Criminalidade', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '⚠️ Criminalidade', 'texto': analise['resumo']})
+                    
+                    progress_bar.progress(86)
+                    
+                    # Densidade de Frota
+                    st.caption("🚙 Analisando densidade de frota...")
+                    analise = analisar_densidade_frota(municipio, uf, tavily_key)
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '🚙 Densidade de Frota', 'texto': analise['resumo']})
                 
                 # Análise Empresarial
                 if cnpj_input and dados_cnpj.get('status') == 'success':
@@ -595,11 +713,10 @@ def main():
                         dados_cnpj.get('cnpj', ''),
                         tavily_key
                     )
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '💼 Saúde Financeira', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '💼 Saúde Financeira', 'texto': analise['resumo']})
                 
                 # Análises do Condutor
                 if cpf_input and nome_input:
@@ -608,33 +725,30 @@ def main():
                     # Perfil Profissional
                     st.caption("👔 Analisando perfil profissional...")
                     analise = analisar_perfil_profissional(nome_input, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '👔 Perfil Profissional', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '👔 Perfil Profissional', 'texto': analise['resumo']})
                     
                     progress_bar.progress(94)
                     
                     # Processos Judiciais
                     st.caption("⚖️ Verificando processos judiciais...")
                     analise = analisar_processos_judiciais(nome_input, cpf_input, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '⚖️ Processos Judiciais', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '⚖️ Processos Judiciais', 'texto': analise['resumo']})
                     
                     progress_bar.progress(96)
                     
                     # Sanções Governamentais
                     st.caption("📋 Verificando sanções...")
                     analise = analisar_sancoes_governo(nome_input, cpf_input, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '📋 Sanções Governamentais', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '📋 Sanções Governamentais', 'texto': analise['resumo']})
             
             progress_bar.progress(100)
             

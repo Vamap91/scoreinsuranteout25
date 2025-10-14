@@ -21,6 +21,159 @@ st.set_page_config(
 )
 
 # ================================
+# FUNÇÕES TAVILY API - INTELIGÊNCIA AVANÇADA
+# ================================
+TAVILY_API_URL = "https://api.tavily.com/search"
+
+def consultar_tavily(query: str, api_key: str) -> Optional[Dict]:
+    """Consulta Tavily API para busca contextual"""
+    try:
+        payload = {
+            "api_key": api_key,
+            "query": query,
+            "search_depth": "basic",
+            "include_answer": True,
+            "max_results": 3
+        }
+        
+        response = requests.post(TAVILY_API_URL, json=payload, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                'answer': data.get('answer', ''),
+                'results': data.get('results', []),
+                'status': 'success'
+            }
+        return {'status': 'error'}
+    except:
+        return {'status': 'error'}
+
+def analisar_risco_regional_tavily(municipio: str, uf: str, api_key: str) -> Dict:
+    """Busca índices de criminalidade da região usando Tavily"""
+    query = f"taxa roubo veículos {municipio} {uf} Brasil estatísticas 2024"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['alto índice', 'elevado', 'crítico']):
+        ajuste = -8
+        reasons.append(f"Tavily: {municipio}/{uf} com alto índice de sinistralidade (-8 pts)")
+    elif any(palavra in answer for palavra in ['médio', 'moderado']):
+        ajuste = -5
+        reasons.append(f"Tavily: {municipio}/{uf} com índice moderado (-5 pts)")
+    elif any(palavra in answer for palavra in ['baixo', 'seguro']):
+        reasons.append(f"Tavily: {municipio}/{uf} com baixo índice de criminalidade")
+    
+    return {
+        'ajuste': ajuste,
+        'reasons': reasons,
+        'resumo': resultado.get('answer', '')[:200]
+    }
+
+def analisar_veiculo_tavily(marca: str, modelo: str, api_key: str) -> Dict:
+    """Verifica se veículo está entre os mais roubados"""
+    query = f"ranking veículos mais roubados Brasil 2024 {marca} {modelo}"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    modelo_lower = modelo.lower()
+    ajuste = 0
+    reasons = []
+    
+    if modelo_lower in answer:
+        if any(palavra in answer for palavra in ['primeiro', 'top 5', 'mais roubado']):
+            ajuste = -10
+            reasons.append(f"Tavily: {marca} {modelo} entre os MAIS roubados (-10 pts)")
+        elif 'top 10' in answer or 'ranking' in answer:
+            ajuste = -5
+            reasons.append(f"Tavily: {marca} {modelo} em ranking de roubos (-5 pts)")
+    
+    return {
+        'ajuste': ajuste,
+        'reasons': reasons,
+        'resumo': resultado.get('answer', '')[:200]
+    }
+
+def verificar_reputacao_empresa_tavily(razao_social: str, cnpj: str, api_key: str) -> Dict:
+    """Verifica reputação da empresa"""
+    query = f"reclamações {razao_social} CNPJ {cnpj} Reclame Aqui reputação"
+    resultado = consultar_tavily(query, api_key)
+    
+    if resultado.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': [], 'resumo': ''}
+    
+    answer = resultado.get('answer', '').lower()
+    ajuste = 0
+    reasons = []
+    
+    if any(palavra in answer for palavra in ['péssima', 'ruim', 'não recomendado']):
+        ajuste = -5
+        reasons.append(f"Tavily: Empresa com reputação negativa (-5 pts)")
+    elif any(palavra in answer for palavra in ['ótima', 'excelente', 'boa']):
+        ajuste = 2
+        reasons.append(f"Tavily: Empresa com boa reputação (+2 pts)")
+    
+    return {
+        'ajuste': ajuste,
+        'reasons': reasons,
+        'resumo': resultado.get('answer', '')[:200]
+    }
+
+# ================================
+# TABELA DE RISCO GEOGRÁFICO (Dados SSP Públicos)
+# ================================
+RISCO_CAPITAIS = {
+    'Rio de Janeiro': {'risco': 'MUITO_ALTO', 'ajuste': -15},
+    'Recife': {'risco': 'MUITO_ALTO', 'ajuste': -15},
+    'Salvador': {'risco': 'MUITO_ALTO', 'ajuste': -15},
+    'Fortaleza': {'risco': 'ALTO', 'ajuste': -10},
+    'São Paulo': {'risco': 'ALTO', 'ajuste': -10},
+    'Belém': {'risco': 'ALTO', 'ajuste': -10},
+    'Belo Horizonte': {'risco': 'MEDIO', 'ajuste': -5},
+    'Curitiba': {'risco': 'MEDIO', 'ajuste': -5},
+    'Brasília': {'risco': 'MEDIO', 'ajuste': -5},
+    'Porto Alegre': {'risco': 'MEDIO', 'ajuste': -5},
+    'Florianópolis': {'risco': 'BAIXO', 'ajuste': 0},
+}
+
+RISCO_UF = {
+    'RJ': -12, 'PE': -12, 'BA': -8, 'CE': -8, 'SP': -8,
+    'PA': -8, 'AM': -5, 'GO': -5, 'MG': -5, 'PR': -5,
+    'RS': -5, 'DF': -5, 'ES': -5, 'SC': 0, 'MT': 0
+}
+
+def analisar_risco_geografico_local(dados_cep: Dict) -> Dict:
+    """Analisa risco baseado em tabela local de criminalidade"""
+    if not dados_cep or dados_cep.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': []}
+    
+    municipio = dados_cep.get('municipio', '')
+    uf = dados_cep.get('uf', '')
+    ajuste = 0
+    reasons = []
+    
+    # Verifica capital
+    if municipio in RISCO_CAPITAIS:
+        dados = RISCO_CAPITAIS[municipio]
+        ajuste = dados['ajuste']
+        reasons.append(f"{municipio}: região de risco {dados['risco']} ({ajuste} pts)")
+    # Verifica UF
+    elif uf in RISCO_UF:
+        ajuste = RISCO_UF[uf]
+        reasons.append(f"Estado {uf}: ajuste regional ({ajuste} pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons}
+
+# ================================
 # FUNÇÕES BRASILAPI
 # ================================
 BASE_URL_BRASILAPI = "https://brasilapi.com.br/api"

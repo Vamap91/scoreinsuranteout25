@@ -646,13 +646,16 @@ def main():
                     # Recalls
                     st.caption("🔧 Analisando recalls...")
                     analise = analisar_veiculo_recalls(marca_input, modelo_input, ano, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '🔧 Recalls',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                     
                     progress_bar.progress(55)
@@ -660,13 +663,16 @@ def main():
                     # Custo Manutenção
                     st.caption("💰 Analisando custo de manutenção...")
                     analise = analisar_custo_manutencao(marca_input, modelo_input, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '💰 Custo Manutenção',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                     
                     progress_bar.progress(60)
@@ -674,13 +680,16 @@ def main():
                     # Segurança
                     st.caption("🛡️ Analisando segurança...")
                     analise = analisar_veiculo_seguranca(marca_input, modelo_input, ano, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '🛡️ Segurança',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                     
                     progress_bar.progress(65)
@@ -688,13 +697,16 @@ def main():
                     # Roubos
                     st.caption("🚨 Verificando ranking de roubos...")
                     analise = analisar_veiculo_roubado(marca_input, modelo_input, tavily_key)
-                    ajuste_total += analise['ajuste']
-                    todas_reasons.extend(analise['reasons'])
-                    if analise['resumo']:
+                    ajuste_total += analise.get('ajuste', 0)
+                    todas_reasons.extend(analise.get('reasons', []))
+                    if analise.get('resumo'):
                         insights_tavily.append({
                             'tipo': '🚨 Ranking Roubos',
                             'texto': analise['resumo'],
-                            'confiabilidade': analise['confiabilidade']
+                            'confiabilidade': analise.get('confiabilidade', {
+                                'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
+                                'motivo': 'Fonte parcial', 'fontes': 'N/A'
+                            })
                         })
                 
                 # Análises Regionais

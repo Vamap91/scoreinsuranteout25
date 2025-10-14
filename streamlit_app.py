@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import json
 import re
+from typing import Dict, Optional
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 import hashlib
@@ -21,10 +22,572 @@ st.set_page_config(
 )
 
 # ================================
-# FUNÇÕES TAVILY API - INTELIGÊNCIA AVANÇADA
+# CONSTANTES
 # ================================
+BASE_URL_BRASILAPI = "https://brasilapi.com.br/api"
 TAVILY_API_URL = "https://api.tavily.com/search"
+TIMEOUT_API = 10
 
+RISCO_CAPITAIS = {
+    'Rio de Janeiro': {'risco': 'MUITO_ALTO', 'ajuste': -15},
+    'Recife': {'risco': 'MUITO_ALTO', 'ajuste': -15},
+    'Salvador': {'risco': 'MUITO_ALTO', 'ajuste': -15},
+    'Fortaleza': {'risco': 'ALTO', 'ajuste': -10},
+    'São Paulo': {'risco': 'ALTO', 'ajuste': -10},
+    'Belém': {'risco': 'ALTO', 'ajuste': -10},
+    'Belo Horizonte': {'risco': 'MEDIO', 'ajuste': -5},
+    'Curitiba': {'risco': 'MEDIO', 'ajuste': -5},
+    'Brasília': {'risco': 'MEDIO', 'ajuste': -5},
+    'Porto Alegre': {'risco': 'MEDIO', 'ajuste': -5},
+    'Florianópolis': {'risco': 'BAIXO', 'ajuste': 0},
+}
+
+RISCO_UF = {
+    'RJ': -12, 'PE': -12, 'BA': -8, 'CE': -8, 'SP': -8,
+    'PA': -8, 'AM': -5, 'GO': -5, 'MG': -5, 'PR': -5,
+    'RS': -5, 'DF': -5, 'ES': -5, 'SC': 0, 'MT': 0
+}
+
+# ================================
+# FUNÇÕES AUXILIARES
+# ================================
+def validar_cpf(cpf):
+    """Validação básica de CPF"""
+    cpf = ''.join(filter(str.isdigit, cpf))
+    if len(cpf) != 11:
+        return False
+    
+    def calcular_digito(cpf_parcial, peso_inicial):
+        soma = sum(int(cpf_parcial[i]) * (peso_inicial - i) for i in range(len(cpf_parcial)))
+        resto = soma % 11
+        return 0 if resto < 2 else 11 - resto
+    
+    if cpf == cpf[0] * 11:
+        return False
+    
+    digito1 = calcular_digito(cpf[:9], 10)
+    digito2 = calcular_digito(cpf[:10], 11)
+    
+    return cpf[-2:] == f"{digito1}{digito2}"
+
+def normalizar_cnpj(cnpj: str) -> str:
+    """Remove caracteres não numéricos do CNPJ"""
+    cnpj_limpo = re.sub(r'\D', '', cnpj)
+    if len(cnpj_limpo) != 14:
+        raise ValueError("CNPJ deve ter 14 dígitos")
+    return cnpj_limpo
+
+def normalizar_cep(cep: str) -> str:
+    """Remove caracteres não numéricos do CEP"""
+    cep_limpo = re.sub(r'\D', '', cep)
+    if len(cep_limpo) != 8:
+        raise ValueError("CEP deve ter 8 dígitos")
+    return cep_limpo
+
+def parse_valor_brl(valor_str: str) -> float:
+    """Converte 'R$ 45.000,00' para float"""
+    if not valor_str:
+        return 0.0
+    valor_limpo = valor_str.replace('R$', '').replace(' ', '').replace('.', '').replace(',', '.')
+    try:
+        return float(valor_limpo)
+    except:
+        return 0.0
+
+def calcular_idade_empresa(data_inicio: str):
+    """Calcula idade da empresa em anos"""
+    try:
+        inicio = datetime.strptime(data_inicio, '%Y-%m-%d')
+        hoje = datetime.now()
+        delta = hoje - inicio
+        return round(delta.days / 365.25, 2)
+    except:
+        return None
+
+# ================================
+# CARREGAMENTO DE DADOS E MODELO
+# ================================
+@st.cache_resource
+def load_embedding_model():
+    """Carrega modelo de embedding"""
+    return SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+@st.cache_data
+def load_vectorized_data():
+    """Carrega dados vetorizados do arquivo .pkl"""
+    try:
+        with open('data_embeddings.pkl', 'rb') as f:
+            data = pickle.load(f)
+        return data
+    except FileNotFoundError:
+        st.warning("⚠️ Arquivo data_embeddings.pkl não encontrado! Sistema funcionando sem base histórica.")
+        return None
+
+# ================================
+# SIMULAÇÃO DE APIs DE CRÉDITO
+# ================================
+def simular_dados_serasa(cpf, nome):
+    """Simula resposta da API Serasa"""
+    hash_cpf = int(hashlib.md5(cpf.encode()).hexdigest(), 16)
+    score_base = 300 + (hash_cpf % 700)
+    
+    return {
+        "score_credito": score_base,
+        "faixa_score": "Alto" if score_base > 700 else "Médio" if score_base > 500 else "Baixo",
+        "consultas_6m": (hash_cpf % 5) + 1,
+        "consultas_12m": (hash_cpf % 10) + 2,
+        "restricoes_ativas": hash_cpf % 3,
+        "valor_restricoes": (hash_cpf % 5000) if (hash_cpf % 3) > 0 else 0,
+        "cheques_sem_fundo_12m": hash_cpf % 2,
+        "protestos_12m": hash_cpf % 2,
+        "renda_presumida": 3000 + (hash_cpf % 10000)
+    }
+
+def simular_dados_boavista(cpf):
+    """Simula resposta da API Boa Vista"""
+    hash_cpf = int(hashlib.md5(cpf.encode()).hexdigest(), 16)
+    
+    return {
+        "score_boavista": 400 + (hash_cpf % 600),
+        "dividas_ativas": (hash_cpf % 4) > 1,
+        "valor_dividas": (hash_cpf % 8000) if (hash_cpf % 4) > 1 else 0,
+        "ultimo_registro_negativo": "2024-08" if (hash_cpf % 3) == 0 else None,
+        "historico_pagamentos": "Regular" if hash_cpf % 2 == 0 else "Irregular",
+        "participacao_societaria": hash_cpf % 5 == 0
+    }
+
+def simular_dados_receita(cpf):
+    """Simula resposta da Receita Federal"""
+    hash_cpf = int(hashlib.md5(cpf.encode()).hexdigest(), 16)
+    
+    return {
+        "situacao_cadastral": "Regular" if hash_cpf % 10 > 1 else "Pendente",
+        "data_inscricao": "1990-01-01",
+        "comprovante_emitido": True
+    }
+
+# ================================
+# CONSULTAS APIs DE CRÉDITO
+# ================================
+def consultar_serasa_api(cpf, nome):
+    """Consulta API Serasa (com fallback simulado)"""
+    try:
+        api_key = st.secrets.get("SERASA_API_KEY", None)
+        
+        if not api_key:
+            return simular_dados_serasa(cpf, nome)
+        
+        url = st.secrets.get("SERASA_API_URL", "")
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"cpf": cpf, "nome": nome}
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return simular_dados_serasa(cpf, nome)
+    except:
+        return simular_dados_serasa(cpf, nome)
+
+def consultar_boavista_api(cpf):
+    """Consulta API Boa Vista (com fallback simulado)"""
+    try:
+        api_key = st.secrets.get("BOAVISTA_API_KEY", None)
+        
+        if not api_key:
+            return simular_dados_boavista(cpf)
+        
+        url = st.secrets.get("BOAVISTA_API_URL", "")
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        payload = {"cpf": cpf}
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return simular_dados_boavista(cpf)
+    except:
+        return simular_dados_boavista(cpf)
+
+def consultar_receita_federal(cpf):
+    """Consulta situação cadastral na Receita Federal (com fallback simulado)"""
+    try:
+        api_key = st.secrets.get("RF_API_KEY", None)
+        
+        if api_key:
+            url = st.secrets.get("RF_API_URL", f"https://api.receitaws.com.br/v1/cpf/{cpf}")
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                return response.json()
+        
+        return simular_dados_receita(cpf)
+    except:
+        return simular_dados_receita(cpf)
+
+# ================================
+# BRASIL API - CNPJ, CEP, FIPE
+# ================================
+def consultar_cnpj_brasilapi(cnpj: str):
+    """Consulta dados cadastrais de CNPJ"""
+    try:
+        cnpj_limpo = normalizar_cnpj(cnpj)
+        url = f"{BASE_URL_BRASILAPI}/cnpj/v1/{cnpj_limpo}"
+        response = requests.get(url, timeout=TIMEOUT_API)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                'cnpj': data.get('cnpj'),
+                'razao_social': data.get('razao_social'),
+                'nome_fantasia': data.get('nome_fantasia'),
+                'situacao_cadastral': data.get('descricao_situacao_cadastral'),
+                'data_inicio_atividade': data.get('data_inicio_atividade'),
+                'cnae_principal': data.get('cnae_fiscal'),
+                'cnae_descricao': data.get('cnae_fiscal_descricao'),
+                'porte': data.get('porte'),
+                'cep': data.get('cep'),
+                'uf': data.get('uf'),
+                'municipio': data.get('municipio'),
+                'bairro': data.get('bairro'),
+                'logradouro': data.get('logradouro'),
+                'qsa': data.get('qsa', []),
+                'status': 'success'
+            }
+        return {'status': 'not_found'}
+    except:
+        return {'status': 'error'}
+
+def consultar_cep_brasilapi(cep: str):
+    """Consulta CEP com geolocalização"""
+    try:
+        cep_limpo = normalizar_cep(cep)
+        
+        # Tenta v2 primeiro (com coordenadas)
+        url = f"{BASE_URL_BRASILAPI}/cep/v2/{cep_limpo}"
+        response = requests.get(url, timeout=TIMEOUT_API)
+        
+        if response.status_code == 200:
+            data = response.json()
+            location = data.get('location', {})
+            coords = location.get('coordinates', {})
+            longitude = coords.get('longitude') if coords else None
+            latitude = coords.get('latitude') if coords else None
+            
+            return {
+                'cep': data.get('cep'),
+                'uf': data.get('state'),
+                'municipio': data.get('city'),
+                'bairro': data.get('neighborhood'),
+                'logradouro': data.get('street'),
+                'longitude': longitude,
+                'latitude': latitude,
+                'geo_disponivel': longitude is not None and latitude is not None,
+                'status': 'success'
+            }
+        
+        # Fallback v1 (sem coordenadas)
+        url = f"{BASE_URL_BRASILAPI}/cep/v1/{cep_limpo}"
+        response = requests.get(url, timeout=TIMEOUT_API)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                'cep': data.get('cep'),
+                'uf': data.get('state'),
+                'municipio': data.get('city'),
+                'bairro': data.get('neighborhood'),
+                'logradouro': data.get('street'),
+                'longitude': None,
+                'latitude': None,
+                'geo_disponivel': False,
+                'status': 'success'
+            }
+        
+        return {'status': 'not_found'}
+    except:
+        return {'status': 'error'}
+
+def consultar_fipe_brasilapi(marca: str, modelo: str):
+    """Busca valor FIPE de um veículo"""
+    try:
+        # Busca tabela atual
+        url_tabelas = f"{BASE_URL_BRASILAPI}/fipe/tabelas/v1"
+        resp_tab = requests.get(url_tabelas, timeout=TIMEOUT_API)
+        if resp_tab.status_code != 200:
+            return {'status': 'error'}
+        
+        tabelas = resp_tab.json()
+        tabela_ref = str(tabelas[-1]['codigo'])
+        
+        # Busca marcas
+        url_marcas = f"{BASE_URL_BRASILAPI}/fipe/marcas/v1/carros"
+        resp_marcas = requests.get(url_marcas, params={'tabela_referencia': tabela_ref}, timeout=TIMEOUT_API)
+        if resp_marcas.status_code != 200:
+            return {'status': 'error'}
+        
+        marcas = resp_marcas.json()
+        codigo_marca = None
+        
+        for m in marcas:
+            if marca.lower() in m['nome'].lower():
+                codigo_marca = m['valor']
+                break
+        
+        if not codigo_marca:
+            return {'status': 'not_found', 'message': 'Marca não encontrada'}
+        
+        # Busca modelos
+        url_modelos = f"{BASE_URL_BRASILAPI}/fipe/marcas/{codigo_marca}/modelos"
+        resp_mod = requests.get(url_modelos, params={'tabela_referencia': tabela_ref}, timeout=TIMEOUT_API)
+        if resp_mod.status_code != 200:
+            return {'status': 'error'}
+        
+        modelos = resp_mod.json()
+        codigo_fipe = None
+        
+        for mod in modelos:
+            if modelo.lower() in mod['nome'].lower():
+                codigo_fipe = mod.get('codigo')
+                break
+        
+        if not codigo_fipe:
+            return {'status': 'not_found', 'message': 'Modelo não encontrado'}
+        
+        # Busca preço
+        url_preco = f"{BASE_URL_BRASILAPI}/fipe/preco/v1/{codigo_fipe}"
+        resp_preco = requests.get(url_preco, params={'tabela_referencia': tabela_ref}, timeout=TIMEOUT_API)
+        if resp_preco.status_code != 200:
+            return {'status': 'error'}
+        
+        data = resp_preco.json()[0]
+        valor_str = data.get('valor', 'R$ 0,00')
+        
+        return {
+            'valor_formatado': valor_str,
+            'valor_numerico': parse_valor_brl(valor_str),
+            'marca': data.get('marca'),
+            'modelo': data.get('modelo'),
+            'ano_modelo': data.get('anoModelo'),
+            'combustivel': data.get('combustivel'),
+            'mes_referencia': data.get('mesReferencia'),
+            'status': 'success'
+        }
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+# ================================
+# AJUSTES BRASILAPI
+# ================================
+def calcular_ajuste_cnpj(dados_cnpj):
+    """Calcula ajustes no score baseado em CNPJ"""
+    if dados_cnpj.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': []}
+    
+    ajuste = 0
+    reasons = []
+    
+    # Situação cadastral
+    situacao = dados_cnpj.get('situacao_cadastral', '')
+    if 'ATIVA' in situacao.upper():
+        idade = calcular_idade_empresa(dados_cnpj.get('data_inicio_atividade', ''))
+        if idade and idade >= 10:
+            ajuste += 5
+            reasons.append(f"Empresa ativa há {idade:.1f} anos (+5 pts)")
+        elif idade and idade >= 5:
+            ajuste += 3
+            reasons.append(f"Empresa ativa há {idade:.1f} anos (+3 pts)")
+    else:
+        ajuste -= 10
+        reasons.append(f"Empresa em situação: {situacao} (-10 pts)")
+    
+    # Porte
+    if dados_cnpj.get('porte') == 'DEMAIS':
+        ajuste += 2
+        reasons.append("Empresa de grande porte (+2 pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons}
+
+def calcular_ajuste_fipe(dados_fipe):
+    """Calcula ajustes no score baseado no valor FIPE"""
+    if dados_fipe.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': []}
+    
+    ajuste = 0
+    reasons = []
+    valor = dados_fipe.get('valor_numerico', 0)
+    
+    # Severidade por valor
+    if valor >= 100000:
+        ajuste -= 8
+        reasons.append(f"Veículo alto valor FIPE: R$ {valor:,.2f} (-8 pts)")
+    elif valor >= 60000:
+        ajuste -= 5
+        reasons.append(f"Veículo valor elevado FIPE: R$ {valor:,.2f} (-5 pts)")
+    elif valor >= 30000:
+        ajuste -= 2
+        reasons.append(f"Veículo valor médio FIPE: R$ {valor:,.2f} (-2 pts)")
+    else:
+        reasons.append(f"Veículo valor FIPE: R$ {valor:,.2f}")
+    
+    return {'ajuste': ajuste, 'reasons': reasons}
+
+def analisar_risco_geografico_local(dados_cep: Dict) -> Dict:
+    """Analisa risco baseado em tabela local de criminalidade"""
+    if not dados_cep or dados_cep.get('status') != 'success':
+        return {'ajuste': 0, 'reasons': []}
+    
+    municipio = dados_cep.get('municipio', '')
+    uf = dados_cep.get('uf', '')
+    ajuste = 0
+    reasons = []
+    
+    # Verifica capital
+    if municipio in RISCO_CAPITAIS:
+        dados = RISCO_CAPITAIS[municipio]
+        ajuste = dados['ajuste']
+        reasons.append(f"{municipio}: região de risco {dados['risco']} ({ajuste} pts)")
+    # Verifica UF
+    elif uf in RISCO_UF:
+        ajuste = RISCO_UF[uf]
+        reasons.append(f"Estado {uf}: ajuste regional ({ajuste} pts)")
+    
+    return {'ajuste': ajuste, 'reasons': reasons}
+
+# ================================
+# WEATHER API
+# ================================
+def consultar_clima_historico(lat: float, lon: float, api_key: str, dias: int = 7) -> Dict:
+    """Consulta histórico climático dos últimos 7 dias"""
+    try:
+        data_inicio = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+        
+        url = "http://api.weatherapi.com/v1/history.json"
+        params = {
+            'key': api_key,
+            'q': f"{lat},{lon}",
+            'dt': data_inicio,
+            'lang': 'pt'
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            chuva_total = 0
+            temp_max = 0
+            teve_tempestade = False
+            
+            for dia in data.get('forecast', {}).get('forecastday', []):
+                day_data = dia.get('day', {})
+                chuva_total += day_data.get('totalprecip_mm', 0)
+                temp_max = max(temp_max, day_data.get('maxtemp_c', 0))
+                
+                condicao = day_data.get('condition', {}).get('text', '').lower()
+                if any(palavra in condicao for palavra in ['tempestade', 'trovoada', 'granizo']):
+                    teve_tempestade = True
+            
+            return {
+                'chuva_acumulada_7d': chuva_total,
+                'temperatura_maxima_7d': temp_max,
+                'teve_tempestade': teve_tempestade,
+                'dias_analisados': dias,
+                'status': 'success'
+            }
+        
+        return {'status': 'error', 'message': f'HTTP {response.status_code}'}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+def consultar_alertas_clima(lat: float, lon: float, api_key: str) -> Dict:
+    """Consulta alertas meteorológicos ativos"""
+    try:
+        url = "http://api.weatherapi.com/v1/current.json"
+        params = {
+            'key': api_key,
+            'q': f"{lat},{lon}",
+            'alerts': 'yes',
+            'lang': 'pt'
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            alertas = data.get('alerts', {}).get('alert', [])
+            
+            if alertas:
+                return {
+                    'tem_alertas': True,
+                    'quantidade': len(alertas),
+                    'alertas': [
+                        {
+                            'evento': alerta.get('event'),
+                            'severidade': alerta.get('severity'),
+                            'descricao': alerta.get('desc')
+                        }
+                        for alerta in alertas
+                    ],
+                    'status': 'success'
+                }
+            
+            return {'tem_alertas': False, 'status': 'success'}
+        
+        return {'status': 'error'}
+    except:
+        return {'status': 'error'}
+
+def analisar_risco_climatico(dados_cep: Dict, api_key: str) -> Dict:
+    """Analisa risco climático para o score"""
+    if not dados_cep or not dados_cep.get('geo_disponivel'):
+        return {'ajuste': 0, 'reasons': [], 'dados_clima': {}}
+    
+    lat = dados_cep.get('latitude')
+    lon = dados_cep.get('longitude')
+    
+    ajuste = 0
+    reasons = []
+    
+    # Histórico de chuvas
+    historico = consultar_clima_historico(lat, lon, api_key, dias=7)
+    
+    if historico.get('status') == 'success':
+        chuva_7d = historico.get('chuva_acumulada_7d', 0)
+        
+        if chuva_7d > 150:
+            ajuste -= 8
+            reasons.append(f"Chuvas intensas na região ({chuva_7d:.1f}mm em 7 dias) - alto risco alagamento (-8 pts)")
+        elif chuva_7d > 80:
+            ajuste -= 5
+            reasons.append(f"Chuvas moderadas na região ({chuva_7d:.1f}mm em 7 dias) - risco moderado (-5 pts)")
+        
+        if historico.get('teve_tempestade'):
+            ajuste -= 5
+            reasons.append("Tempestades/Granizo recentes na região - risco danos veículo (-5 pts)")
+    
+    # Alertas ativos
+    alertas = consultar_alertas_clima(lat, lon, api_key)
+    
+    if alertas.get('tem_alertas'):
+        qtd_alertas = alertas.get('quantidade', 0)
+        ajuste -= min(qtd_alertas * 3, 10)
+        reasons.append(f"{qtd_alertas} alerta(s) meteorológico(s) ativo(s) na região (-{min(qtd_alertas * 3, 10)} pts)")
+    
+    return {
+        'ajuste': ajuste,
+        'reasons': reasons,
+        'dados_clima': {
+            'historico': historico if historico.get('status') == 'success' else None,
+            'alertas': alertas if alertas.get('tem_alertas') else None
+        }
+    }
+
+# ================================
+# TAVILY API
+# ================================
 def consultar_tavily(query: str, api_key: str) -> Optional[Dict]:
     """Consulta Tavily API para busca contextual"""
     try:
@@ -126,429 +689,6 @@ def verificar_reputacao_empresa_tavily(razao_social: str, cnpj: str, api_key: st
         'ajuste': ajuste,
         'reasons': reasons,
         'resumo': resultado.get('answer', '')[:200]
-    }
-
-# ================================
-# TABELA DE RISCO GEOGRÁFICO (Dados SSP Públicos)
-# ================================
-RISCO_CAPITAIS = {
-    'Rio de Janeiro': {'risco': 'MUITO_ALTO', 'ajuste': -15},
-    'Recife': {'risco': 'MUITO_ALTO', 'ajuste': -15},
-    'Salvador': {'risco': 'MUITO_ALTO', 'ajuste': -15},
-    'Fortaleza': {'risco': 'ALTO', 'ajuste': -10},
-    'São Paulo': {'risco': 'ALTO', 'ajuste': -10},
-    'Belém': {'risco': 'ALTO', 'ajuste': -10},
-    'Belo Horizonte': {'risco': 'MEDIO', 'ajuste': -5},
-    'Curitiba': {'risco': 'MEDIO', 'ajuste': -5},
-    'Brasília': {'risco': 'MEDIO', 'ajuste': -5},
-    'Porto Alegre': {'risco': 'MEDIO', 'ajuste': -5},
-    'Florianópolis': {'risco': 'BAIXO', 'ajuste': 0},
-}
-
-RISCO_UF = {
-    'RJ': -12, 'PE': -12, 'BA': -8, 'CE': -8, 'SP': -8,
-    'PA': -8, 'AM': -5, 'GO': -5, 'MG': -5, 'PR': -5,
-    'RS': -5, 'DF': -5, 'ES': -5, 'SC': 0, 'MT': 0
-}
-
-def analisar_risco_geografico_local(dados_cep: Dict) -> Dict:
-    """Analisa risco baseado em tabela local de criminalidade"""
-    if not dados_cep or dados_cep.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': []}
-    
-    municipio = dados_cep.get('municipio', '')
-    uf = dados_cep.get('uf', '')
-    ajuste = 0
-    reasons = []
-    
-    # Verifica capital
-    if municipio in RISCO_CAPITAIS:
-        dados = RISCO_CAPITAIS[municipio]
-        ajuste = dados['ajuste']
-        reasons.append(f"{municipio}: região de risco {dados['risco']} ({ajuste} pts)")
-    # Verifica UF
-    elif uf in RISCO_UF:
-        ajuste = RISCO_UF[uf]
-        reasons.append(f"Estado {uf}: ajuste regional ({ajuste} pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons}
-
-# ================================
-# FUNÇÕES BRASILAPI
-# ================================
-BASE_URL_BRASILAPI = "https://brasilapi.com.br/api"
-TIMEOUT_API = 10
-
-def normalizar_cnpj(cnpj: str) -> str:
-    """Remove caracteres não numéricos do CNPJ"""
-    cnpj_limpo = re.sub(r'\D', '', cnpj)
-    if len(cnpj_limpo) != 14:
-        raise ValueError("CNPJ deve ter 14 dígitos")
-    return cnpj_limpo
-
-def normalizar_cep(cep: str) -> str:
-    """Remove caracteres não numéricos do CEP"""
-    cep_limpo = re.sub(r'\D', '', cep)
-    if len(cep_limpo) != 8:
-        raise ValueError("CEP deve ter 8 dígitos")
-    return cep_limpo
-
-def parse_valor_brl(valor_str: str) -> float:
-    """Converte 'R$ 45.000,00' para float"""
-    if not valor_str:
-        return 0.0
-    valor_limpo = valor_str.replace('R$', '').replace(' ', '').replace('.', '').replace(',', '.')
-    try:
-        return float(valor_limpo)
-    except:
-        return 0.0
-
-def consultar_cnpj_brasilapi(cnpj: str):
-    """Consulta dados cadastrais de CNPJ"""
-    try:
-        cnpj_limpo = normalizar_cnpj(cnpj)
-        url = f"{BASE_URL_BRASILAPI}/cnpj/v1/{cnpj_limpo}"
-        response = requests.get(url, timeout=TIMEOUT_API)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'cnpj': data.get('cnpj'),
-                'razao_social': data.get('razao_social'),
-                'nome_fantasia': data.get('nome_fantasia'),
-                'situacao_cadastral': data.get('descricao_situacao_cadastral'),
-                'data_inicio_atividade': data.get('data_inicio_atividade'),
-                'cnae_principal': data.get('cnae_fiscal'),
-                'cnae_descricao': data.get('cnae_fiscal_descricao'),
-                'porte': data.get('porte'),
-                'cep': data.get('cep'),
-                'uf': data.get('uf'),
-                'municipio': data.get('municipio'),
-                'bairro': data.get('bairro'),
-                'logradouro': data.get('logradouro'),
-                'qsa': data.get('qsa', []),
-                'status': 'success'
-            }
-        return {'status': 'not_found'}
-    except:
-        return {'status': 'error'}
-
-def consultar_cep_brasilapi(cep: str):
-    """Consulta CEP com geolocalização"""
-    try:
-        cep_limpo = normalizar_cep(cep)
-        
-        # Tenta v2 primeiro (com coordenadas)
-        url = f"{BASE_URL_BRASILAPI}/cep/v2/{cep_limpo}"
-        response = requests.get(url, timeout=TIMEOUT_API)
-        
-        if response.status_code == 200:
-            data = response.json()
-            location = data.get('location', {})
-            coords = location.get('coordinates', [None, None]) if location else [None, None]
-            
-            return {
-                'cep': data.get('cep'),
-                'uf': data.get('state'),
-                'municipio': data.get('city'),
-                'bairro': data.get('neighborhood'),
-                'logradouro': data.get('street'),
-                'longitude': coords[0],
-                'latitude': coords[1],
-                'geo_disponivel': coords[0] is not None,
-                'status': 'success'
-            }
-        
-        # Fallback v1 (sem coordenadas)
-        url = f"{BASE_URL_BRASILAPI}/cep/v1/{cep_limpo}"
-        response = requests.get(url, timeout=TIMEOUT_API)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'cep': data.get('cep'),
-                'uf': data.get('state'),
-                'municipio': data.get('city'),
-                'bairro': data.get('neighborhood'),
-                'logradouro': data.get('street'),
-                'longitude': None,
-                'latitude': None,
-                'geo_disponivel': False,
-                'status': 'success'
-            }
-        
-        return {'status': 'not_found'}
-    except:
-        return {'status': 'error'}
-
-def consultar_fipe_brasilapi(marca: str, modelo: str):
-    """Busca valor FIPE de um veículo"""
-    try:
-        # Busca tabela atual
-        url_tabelas = f"{BASE_URL_BRASILAPI}/fipe/tabelas/v1"
-        resp_tab = requests.get(url_tabelas, timeout=TIMEOUT_API)
-        if resp_tab.status_code != 200:
-            return {'status': 'error'}
-        
-        tabelas = resp_tab.json()
-        tabela_ref = str(tabelas[-1]['codigo'])
-        
-        # Busca marcas
-        url_marcas = f"{BASE_URL_BRASILAPI}/fipe/marcas/v1/carros"
-        resp_marcas = requests.get(url_marcas, params={'tabela_referencia': tabela_ref}, timeout=TIMEOUT_API)
-        if resp_marcas.status_code != 200:
-            return {'status': 'error'}
-        
-        marcas = resp_marcas.json()
-        codigo_marca = None
-        
-        for m in marcas:
-            if marca.lower() in m['nome'].lower():
-                codigo_marca = m['valor']
-                break
-        
-        if not codigo_marca:
-            return {'status': 'not_found', 'message': 'Marca não encontrada'}
-        
-        # Busca modelos
-        url_modelos = f"{BASE_URL_BRASILAPI}/fipe/veiculos/v1/carros/{codigo_marca}"
-        resp_mod = requests.get(url_modelos, params={'tabela_referencia': tabela_ref}, timeout=TIMEOUT_API)
-        if resp_mod.status_code != 200:
-            return {'status': 'error'}
-        
-        modelos = resp_mod.json()
-        codigo_fipe = None
-        
-        for mod in modelos:
-            if modelo.lower() in mod['nome'].lower():
-                codigo_fipe = mod.get('codigo')
-                break
-        
-        if not codigo_fipe:
-            return {'status': 'not_found', 'message': 'Modelo não encontrado'}
-        
-        # Busca preço
-        url_preco = f"{BASE_URL_BRASILAPI}/fipe/preco/v1/{codigo_fipe}"
-        resp_preco = requests.get(url_preco, params={'tabela_referencia': tabela_ref}, timeout=TIMEOUT_API)
-        if resp_preco.status_code != 200:
-            return {'status': 'error'}
-        
-        data = resp_preco.json()[0]
-        valor_str = data.get('valor', 'R$ 0,00')
-        
-        return {
-            'valor_formatado': valor_str,
-            'valor_numerico': parse_valor_brl(valor_str),
-            'marca': data.get('marca'),
-            'modelo': data.get('modelo'),
-            'ano_modelo': data.get('anoModelo'),
-            'combustivel': data.get('combustivel'),
-            'mes_referencia': data.get('mesReferencia'),
-            'status': 'success'
-        }
-    except Exception as e:
-        return {'status': 'error', 'message': str(e)}
-
-def calcular_idade_empresa(data_inicio: str):
-    """Calcula idade da empresa em anos"""
-    try:
-        inicio = datetime.strptime(data_inicio, '%Y-%m-%d')
-        hoje = datetime.now()
-        delta = hoje - inicio
-        return round(delta.days / 365.25, 2)
-    except:
-        return None
-
-def calcular_ajuste_cnpj(dados_cnpj):
-    """Calcula ajustes no score baseado em CNPJ"""
-    if dados_cnpj.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': []}
-    
-    ajuste = 0
-    reasons = []
-    
-    # Situação cadastral
-    situacao = dados_cnpj.get('situacao_cadastral', '')
-    if situacao == 'ATIVA':
-        idade = calcular_idade_empresa(dados_cnpj.get('data_inicio_atividade', ''))
-        if idade and idade >= 10:
-            ajuste += 5
-            reasons.append(f"Empresa ativa há {idade:.1f} anos (+5 pts)")
-        elif idade and idade >= 5:
-            ajuste += 3
-            reasons.append(f"Empresa ativa há {idade:.1f} anos (+3 pts)")
-    else:
-        ajuste -= 10
-        reasons.append(f"Empresa em situação: {situacao} (-10 pts)")
-    
-    # Porte
-    if dados_cnpj.get('porte') == 'DEMAIS':
-        ajuste += 2
-        reasons.append("Empresa de grande porte (+2 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons}
-
-def calcular_ajuste_fipe(dados_fipe):
-    """Calcula ajustes no score baseado no valor FIPE"""
-    if dados_fipe.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': []}
-    
-    ajuste = 0
-    reasons = []
-    valor = dados_fipe.get('valor_numerico', 0)
-    
-    # Severidade por valor
-    if valor >= 100000:
-        ajuste -= 8
-        reasons.append(f"Veículo alto valor FIPE: R$ {valor:,.2f} (-8 pts)")
-    elif valor >= 60000:
-        ajuste -= 5
-        reasons.append(f"Veículo valor elevado FIPE: R$ {valor:,.2f} (-5 pts)")
-    elif valor >= 30000:
-        ajuste -= 2
-        reasons.append(f"Veículo valor médio FIPE: R$ {valor:,.2f} (-2 pts)")
-    else:
-        reasons.append(f"Veículo valor FIPE: R$ {valor:,.2f}")
-    
-    return {'ajuste': ajuste, 'reasons': reasons}
-
-# ================================
-# CARREGAMENTO DE DADOS E MODELO
-# ================================
-@st.cache_resource
-def load_embedding_model():
-    """Carrega modelo de embedding"""
-    return SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-
-@st.cache_data
-def load_vectorized_data():
-    """Carrega dados vetorizados do arquivo .pkl"""
-    try:
-        with open('data_embeddings.pkl', 'rb') as f:
-            data = pickle.load(f)
-        return data
-    except FileNotFoundError:
-        st.warning("⚠️ Arquivo data_embeddings.pkl não encontrado! Sistema funcionando sem base histórica.")
-        return None
-
-# ================================
-# FUNÇÕES DE API TRADICIONAIS
-# ================================
-def validar_cpf(cpf):
-    """Validação básica de CPF"""
-    cpf = ''.join(filter(str.isdigit, cpf))
-    if len(cpf) != 11:
-        return False
-    
-    def calcular_digito(cpf_parcial, peso_inicial):
-        soma = sum(int(cpf_parcial[i]) * (peso_inicial - i) for i in range(len(cpf_parcial)))
-        resto = soma % 11
-        return 0 if resto < 2 else 11 - resto
-    
-    if cpf == cpf[0] * 11:
-        return False
-    
-    digito1 = calcular_digito(cpf[:9], 10)
-    digito2 = calcular_digito(cpf[:10], 11)
-    
-    return cpf[-2:] == f"{digito1}{digito2}"
-
-def consultar_serasa_api(cpf, nome):
-    """Consulta API Serasa (com fallback simulado)"""
-    try:
-        api_key = st.secrets.get("SERASA_API_KEY", None)
-        
-        if not api_key:
-            return simular_dados_serasa(cpf, nome)
-        
-        url = st.secrets.get("SERASA_API_URL", "")
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {"cpf": cpf, "nome": nome}
-        
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return simular_dados_serasa(cpf, nome)
-    except:
-        return simular_dados_serasa(cpf, nome)
-
-def consultar_boavista_api(cpf):
-    """Consulta API Boa Vista (com fallback simulado)"""
-    try:
-        api_key = st.secrets.get("BOAVISTA_API_KEY", None)
-        
-        if not api_key:
-            return simular_dados_boavista(cpf)
-        
-        url = st.secrets.get("BOAVISTA_API_URL", "")
-        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-        payload = {"cpf": cpf}
-        
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return simular_dados_boavista(cpf)
-    except:
-        return simular_dados_boavista(cpf)
-
-def consultar_receita_federal(cpf):
-    """Consulta situação cadastral na Receita Federal (com fallback simulado)"""
-    try:
-        api_key = st.secrets.get("RF_API_KEY", None)
-        
-        if api_key:
-            url = st.secrets.get("RF_API_URL", f"https://api.receitaws.com.br/v1/cpf/{cpf}")
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                return response.json()
-        
-        return simular_dados_receita(cpf)
-    except:
-        return simular_dados_receita(cpf)
-
-def simular_dados_serasa(cpf, nome):
-    """Simula resposta da API Serasa"""
-    hash_cpf = int(hashlib.md5(cpf.encode()).hexdigest(), 16)
-    score_base = 300 + (hash_cpf % 700)
-    
-    return {
-        "score_credito": score_base,
-        "faixa_score": "Alto" if score_base > 700 else "Médio" if score_base > 500 else "Baixo",
-        "consultas_6m": (hash_cpf % 5) + 1,
-        "consultas_12m": (hash_cpf % 10) + 2,
-        "restricoes_ativas": hash_cpf % 3,
-        "valor_restricoes": (hash_cpf % 5000) if (hash_cpf % 3) > 0 else 0,
-        "cheques_sem_fundo_12m": hash_cpf % 2,
-        "protestos_12m": hash_cpf % 2,
-        "renda_presumida": 3000 + (hash_cpf % 10000)
-    }
-
-def simular_dados_boavista(cpf):
-    """Simula resposta da API Boa Vista"""
-    hash_cpf = int(hashlib.md5(cpf.encode()).hexdigest(), 16)
-    
-    return {
-        "score_boavista": 400 + (hash_cpf % 600),
-        "dividas_ativas": (hash_cpf % 4) > 1,
-        "valor_dividas": (hash_cpf % 8000) if (hash_cpf % 4) > 1 else 0,
-        "ultimo_registro_negativo": "2024-08" if (hash_cpf % 3) == 0 else None,
-        "historico_pagamentos": "Regular" if hash_cpf % 2 == 0 else "Irregular",
-        "participacao_societaria": hash_cpf % 5 == 0
-    }
-
-def simular_dados_receita(cpf):
-    """Simula resposta da Receita Federal"""
-    hash_cpf = int(hashlib.md5(cpf.encode()).hexdigest(), 16)
-    
-    return {
-        "situacao_cadastral": "Regular" if hash_cpf % 10 > 1 else "Pendente",
-        "data_inscricao": "1990-01-01",
-        "comprovante_emitido": True
     }
 
 # ================================
@@ -685,6 +825,8 @@ def main():
         - ✅ Validação de CPF
         - 🔍 Consulta APIs de crédito
         - 🌐 Enriquecimento BrasilAPI
+        - 🧠 Análise Tavily (opcional)
+        - 🌦️ Análise climática (opcional)
         - 🧬 Vetorização de dados
         - 📊 Busca de similares
         - 🎯 Score 0-100
@@ -707,6 +849,18 @@ def main():
                 st.warning(f"⚠️ {api} (simulação)")
         
         st.success("✅ BrasilAPI (pública)")
+        
+        # Status Tavily
+        if "TAVILY_API_KEY" in st.secrets:
+            st.success("✅ Tavily Intelligence")
+        else:
+            st.info("ℹ️ Tavily (não configurado)")
+        
+        # Status Weather API
+        if "WEATHER_API_KEY" in st.secrets:
+            st.success("✅ Weather API")
+        else:
+            st.info("ℹ️ Weather API (não configurado)")
     
     # Formulário
     st.header("📝 Dados do Cliente")
@@ -719,8 +873,8 @@ def main():
     with col2:
         nome_input = st.text_input("Nome Completo *", placeholder="João da Silva")
     
-    # Campos opcionais BrasilAPI
-    with st.expander("🌐 Enriquecimento BrasilAPI (Opcional)", expanded=False):
+    # Campos opcionais
+    with st.expander("🌐 Enriquecimento de Dados (Opcional)", expanded=False):
         st.markdown("*Adicione dados extras para melhorar a análise*")
         
         col1, col2 = st.columns(2)
@@ -735,7 +889,7 @@ def main():
             cep_input = st.text_input(
                 "CEP Residência",
                 placeholder="00000000",
-                help="Para análise de risco geográfico"
+                help="Para análise de risco geográfico e climático"
             )
         
         with col2:
@@ -744,6 +898,14 @@ def main():
             if usar_fipe:
                 fipe_marca = st.text_input("Marca", placeholder="Ex: Volkswagen")
                 fipe_modelo = st.text_input("Modelo", placeholder="Ex: Gol")
+            
+            # Tavily Intelligence
+            usar_tavily = st.checkbox("🧠 Análise Avançada (Tavily)", value=False, 
+                                      help="Busca inteligente sobre criminalidade, reputação e alertas")
+            
+            # Weather Analysis
+            usar_weather = st.checkbox("🌦️ Análise Climática", value=False,
+                                       help="Histórico de 7 dias + alertas meteorológicos")
     
     # Botão análise
     if st.button("🚀 Analisar Risco", type="primary", use_container_width=True):
@@ -763,7 +925,7 @@ def main():
             
             # APIs tradicionais
             st.info("📡 Consultando APIs de crédito...")
-            progress_bar.progress(30)
+            progress_bar.progress(20)
             
             dados_serasa = consultar_serasa_api(cpf_limpo, nome_input)
             dados_boavista = consultar_boavista_api(cpf_limpo)
@@ -775,7 +937,7 @@ def main():
                 'receita': dados_receita
             }
             
-            progress_bar.progress(50)
+            progress_bar.progress(40)
             
             # BrasilAPI
             dados_brasilapi = {}
@@ -784,6 +946,7 @@ def main():
             st.info("🌐 Consultando BrasilAPI...")
             
             # CNPJ
+            dados_cnpj = None
             if cnpj_input:
                 try:
                     dados_cnpj = consultar_cnpj_brasilapi(cnpj_input)
@@ -796,39 +959,135 @@ def main():
                     pass
             
             # CEP
+            dados_cep_obj = None
             if cep_input:
                 try:
-                    dados_cep = consultar_cep_brasilapi(cep_input)
-                    if dados_cep.get('status') == 'success':
-                        dados_brasilapi['cep'] = dados_cep
+                    dados_cep_obj = consultar_cep_brasilapi(cep_input)
+                    if dados_cep_obj.get('status') == 'success':
+                        dados_brasilapi['cep'] = dados_cep_obj
+                        
+                        # Análise de risco geográfico local
+                        risco_geo = analisar_risco_geografico_local(dados_cep_obj)
+                        ajustes_brasilapi['ajuste_total'] += risco_geo['ajuste']
+                        ajustes_brasilapi['reasons'].extend(risco_geo['reasons'])
                 except:
                     pass
             
             # FIPE
+            dados_fipe_obj = None
             if usar_fipe and fipe_marca and fipe_modelo:
                 try:
-                    dados_fipe = consultar_fipe_brasilapi(fipe_marca, fipe_modelo)
-                    if dados_fipe.get('status') == 'success':
-                        dados_brasilapi['fipe'] = dados_fipe
-                        ajuste = calcular_ajuste_fipe(dados_fipe)
+                    dados_fipe_obj = consultar_fipe_brasilapi(fipe_marca, fipe_modelo)
+                    if dados_fipe_obj.get('status') == 'success':
+                        dados_brasilapi['fipe'] = dados_fipe_obj
+                        ajuste = calcular_ajuste_fipe(dados_fipe_obj)
                         ajustes_brasilapi['ajuste_total'] += ajuste['ajuste']
                         ajustes_brasilapi['reasons'].extend(ajuste['reasons'])
                 except:
                     pass
             
-            progress_bar.progress(70)
+            progress_bar.progress(55)
+            
+            # WEATHER ANALYSIS
+            dados_weather = {}
+            ajustes_weather = {'ajuste_total': 0, 'reasons': []}
+            
+            if usar_weather and "WEATHER_API_KEY" in st.secrets and dados_cep_obj:
+                if dados_cep_obj.get('geo_disponivel'):
+                    st.info("🌦️ Analisando condições climáticas...")
+                    try:
+                        weather_key = st.secrets["WEATHER_API_KEY"]
+                        analise_clima = analisar_risco_climatico(dados_cep_obj, weather_key)
+                        
+                        dados_weather = analise_clima.get('dados_clima', {})
+                        ajustes_weather['ajuste_total'] = analise_clima['ajuste']
+                        ajustes_weather['reasons'] = analise_clima['reasons']
+                    except Exception as e:
+                        st.warning(f"Erro ao analisar clima: {str(e)}")
+            
+            progress_bar.progress(65)
+            
+            # TAVILY INTELLIGENCE
+            dados_tavily = {}
+            ajustes_tavily = {'ajuste_total': 0, 'reasons': [], 'resumos': []}
+            
+            if usar_tavily and "TAVILY_API_KEY" in st.secrets:
+                st.info("🧠 Analisando com Tavily Intelligence...")
+                tavily_key = st.secrets["TAVILY_API_KEY"]
+                
+                # Risco Regional
+                if dados_cep_obj and dados_cep_obj.get('status') == 'success':
+                    try:
+                        analise_regiao = analisar_risco_regional_tavily(
+                            dados_cep_obj.get('municipio', ''),
+                            dados_cep_obj.get('uf', ''),
+                            tavily_key
+                        )
+                        if analise_regiao['ajuste'] != 0 or analise_regiao['reasons']:
+                            dados_tavily['risco_regional'] = analise_regiao
+                            ajustes_tavily['ajuste_total'] += analise_regiao['ajuste']
+                            ajustes_tavily['reasons'].extend(analise_regiao['reasons'])
+                            if analise_regiao['resumo']:
+                                ajustes_tavily['resumos'].append({
+                                    'tipo': 'Risco Regional',
+                                    'resumo': analise_regiao['resumo']
+                                })
+                    except:
+                        pass
+                
+                # Veículo mais roubado
+                if dados_fipe_obj and dados_fipe_obj.get('status') == 'success':
+                    try:
+                        analise_veiculo = analisar_veiculo_tavily(
+                            fipe_marca,
+                            fipe_modelo,
+                            tavily_key
+                        )
+                        if analise_veiculo['ajuste'] != 0 or analise_veiculo['reasons']:
+                            dados_tavily['veiculo_roubado'] = analise_veiculo
+                            ajustes_tavily['ajuste_total'] += analise_veiculo['ajuste']
+                            ajustes_tavily['reasons'].extend(analise_veiculo['reasons'])
+                            if analise_veiculo['resumo']:
+                                ajustes_tavily['resumos'].append({
+                                    'tipo': 'Ranking Veículos Roubados',
+                                    'resumo': analise_veiculo['resumo']
+                                })
+                    except:
+                        pass
+                
+                # Reputação empresa
+                if dados_cnpj and dados_cnpj.get('status') == 'success':
+                    try:
+                        analise_reputacao = verificar_reputacao_empresa_tavily(
+                            dados_cnpj.get('razao_social', ''),
+                            dados_cnpj.get('cnpj', ''),
+                            tavily_key
+                        )
+                        if analise_reputacao['ajuste'] != 0 or analise_reputacao['reasons']:
+                            dados_tavily['reputacao_empresa'] = analise_reputacao
+                            ajustes_tavily['ajuste_total'] += analise_reputacao['ajuste']
+                            ajustes_tavily['reasons'].extend(analise_reputacao['reasons'])
+                            if analise_reputacao['resumo']:
+                                ajustes_tavily['resumos'].append({
+                                    'tipo': 'Reputação Empresa',
+                                    'resumo': analise_reputacao['resumo']
+                                })
+                    except:
+                        pass
+            
+            progress_bar.progress(75)
             
             # Vetorização
             st.info("🧬 Criando embedding...")
             embedding_cliente = criar_embedding_cliente(nome_input, cpf_limpo, dados_externos)
             
-            progress_bar.progress(80)
+            progress_bar.progress(85)
             
             # Similares
             data_vectorized = load_vectorized_data()
             similares = buscar_similares(embedding_cliente, data_vectorized)
             
-            # Score
+            # Score base
             resultado = calcular_score_risco(dados_externos, similares)
             
             # Aplica ajustes BrasilAPI
@@ -837,11 +1096,9 @@ def main():
                 resultado['score'] = round(resultado['score'], 2)
                 resultado['probabilidade_sinistro_12m'] = round((100 - resultado['score']) / 100 * 0.15, 4)
                 
-                # Reclassifica banda
                 score_ajustado = resultado['score']
                 resultado['banda'] = 'MUITO BAIXO' if score_ajustado >= 80 else 'BAIXO' if score_ajustado >= 60 else 'MÉDIO' if score_ajustado >= 40 else 'ALTO' if score_ajustado >= 20 else 'MUITO ALTO'
                 
-                # Adiciona reasons BrasilAPI
                 for reason_text in ajustes_brasilapi['reasons']:
                     resultado['reasons'].append({
                         'fator': 'BrasilAPI',
@@ -849,13 +1106,43 @@ def main():
                         'descricao': reason_text
                     })
             
+            # Aplica ajustes WEATHER
+            if ajustes_weather['ajuste_total'] != 0:
+                resultado['score'] = max(0, min(100, resultado['score'] + ajustes_weather['ajuste_total']))
+                resultado['score'] = round(resultado['score'], 2)
+                resultado['probabilidade_sinistro_12m'] = round((100 - resultado['score']) / 100 * 0.15, 4)
+                
+                score_ajustado = resultado['score']
+                resultado['banda'] = 'MUITO BAIXO' if score_ajustado >= 80 else 'BAIXO' if score_ajustado >= 60 else 'MÉDIO' if score_ajustado >= 40 else 'ALTO' if score_ajustado >= 20 else 'MUITO ALTO'
+                
+                for reason_text in ajustes_weather['reasons']:
+                    resultado['reasons'].append({
+                        'fator': 'Análise Climática',
+                        'impacto': ajustes_weather['ajuste_total'],
+                        'descricao': reason_text
+                    })
+            
+            # Aplica ajustes TAVILY
+            if ajustes_tavily['ajuste_total'] != 0:
+                resultado['score'] = max(0, min(100, resultado['score'] + ajustes_tavily['ajuste_total']))
+                resultado['score'] = round(resultado['score'], 2)
+                resultado['probabilidade_sinistro_12m'] = round((100 - resultado['score']) / 100 * 0.15, 4)
+                
+                score_ajustado = resultado['score']
+                resultado['banda'] = 'MUITO BAIXO' if score_ajustado >= 80 else 'BAIXO' if score_ajustado >= 60 else 'MÉDIO' if score_ajustado >= 40 else 'ALTO' if score_ajustado >= 20 else 'MUITO ALTO'
+                
+                for reason_text in ajustes_tavily['reasons']:
+                    resultado['reasons'].append({
+                        'fator': 'Tavily Intelligence',
+                        'impacto': ajustes_tavily['ajuste_total'],
+                        'descricao': reason_text
+                    })
+            
             progress_bar.progress(100)
         
         st.success("✅ Análise concluída!")
         
-        # ================================
         # RESULTADOS
-        # ================================
         st.header("📊 Resultado da Análise")
         
         col1, col2, col3, col4 = st.columns(4)
@@ -880,7 +1167,7 @@ def main():
             with st.expander(f"**{i}. {reason['fator']}** - Impacto: {reason['impacto']:+.2f} pontos"):
                 st.write(reason['descricao'])
         
-        # Dados APIs tradicionais
+        # Dados APIs
         with st.expander("📡 Dados das APIs de Crédito"):
             tab1, tab2, tab3 = st.tabs(["Serasa", "Boa Vista", "Receita Federal"])
             
@@ -895,7 +1182,6 @@ def main():
         if dados_brasilapi:
             with st.expander("🌐 Dados Enriquecidos - BrasilAPI"):
                 
-                # CNPJ
                 if 'cnpj' in dados_brasilapi:
                     st.subheader("📊 Dados Cadastrais CNPJ")
                     cnpj_data = dados_brasilapi['cnpj']
@@ -919,7 +1205,6 @@ def main():
                     with st.expander("Ver JSON completo"):
                         st.json(cnpj_data)
                 
-                # CEP
                 if 'cep' in dados_brasilapi:
                     st.subheader("📍 Dados de Endereço")
                     cep_data = dados_brasilapi['cep']
@@ -938,15 +1223,13 @@ def main():
                         else:
                             st.warning("⚠️ Geolocalização não disponível")
                 
-                # FIPE
                 if 'fipe' in dados_brasilapi:
                     st.subheader("🚗 Valor de Referência FIPE")
                     fipe_data = dados_brasilapi['fipe']
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        valor = fipe_data.get('valor_formatado', 'N/A')
-                        st.metric("Valor FIPE", valor)
+                        st.metric("Valor FIPE", fipe_data.get('valor_formatado', 'N/A'))
                     with col2:
                         marca_modelo = f"{fipe_data.get('marca', '')} {fipe_data.get('modelo', '')}"
                         st.metric("Veículo", marca_modelo[:30])
@@ -955,6 +1238,54 @@ def main():
                         st.metric("Ano/Combustível", ano_comb)
                     
                     st.info(f"📅 Referência: {fipe_data.get('mes_referencia', 'N/A')}")
+        
+        # Dados WEATHER
+        if dados_weather:
+            with st.expander("🌦️ Análise Climática - Weather API"):
+                st.markdown("*Histórico dos últimos 7 dias + Alertas ativos*")
+                
+                if 'historico' in dados_weather and dados_weather['historico']:
+                    hist = dados_weather['historico']
+                    st.subheader("📊 Histórico Climático (7 dias)")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Chuva Acumulada", f"{hist.get('chuva_acumulada_7d', 0):.1f} mm")
+                    with col2:
+                        st.metric("Temp. Máxima", f"{hist.get('temperatura_maxima_7d', 0):.1f} °C")
+                    with col3:
+                        teve_temp = "Sim" if hist.get('teve_tempestade') else "Não"
+                        st.metric("Tempestades", teve_temp)
+                
+                if 'alertas' in dados_weather and dados_weather['alertas']:
+                    alerts = dados_weather['alertas']
+                    st.subheader("⚠️ Alertas Meteorológicos Ativos")
+                    
+                    for alerta in alerts.get('alertas', []):
+                        st.warning(f"**{alerta['evento']}** - {alerta['descricao']}")
+                
+                if ajustes_weather.get('ajuste_total', 0) != 0:
+                    st.metric(
+                        "Impacto Total Clima",
+                        f"{ajustes_weather['ajuste_total']:+.0f} pontos",
+                        help="Ajuste no score devido a condições climáticas"
+                    )
+        
+        # Dados TAVILY
+        if dados_tavily:
+            with st.expander("🧠 Análise Tavily Intelligence"):
+                st.markdown("*Busca inteligente em fontes públicas*")
+                
+                for resumo in ajustes_tavily.get('resumos', []):
+                    st.subheader(f"📌 {resumo['tipo']}")
+                    st.info(resumo['resumo'])
+                
+                if ajustes_tavily.get('ajuste_total', 0) != 0:
+                    st.metric(
+                        "Impacto Total Tavily",
+                        f"{ajustes_tavily['ajuste_total']:+.0f} pontos",
+                        help="Ajuste no score devido a análises Tavily"
+                    )
         
         # Clientes Similares
         if similares:
@@ -973,6 +1304,8 @@ def main():
             'score': resultado,
             'dados_externos': dados_externos,
             'dados_brasilapi': dados_brasilapi,
+            'dados_weather': dados_weather,
+            'dados_tavily': dados_tavily,
             'similares': similares
         }
         

@@ -850,17 +850,43 @@ def main():
         
         st.success("✅ BrasilAPI (pública)")
         
-        # Status Tavily
-        if "TAVILY_API_KEY" in st.secrets:
-            st.success("✅ Tavily Intelligence")
-        else:
-            st.info("ℹ️ Tavily (não configurado)")
+        st.markdown("---")
+        st.markdown("**🔧 Debug - Status APIs:**")
         
-        # Status Weather API
-        if "WEATHER_API_KEY" in st.secrets:
-            st.success("✅ Weather API")
-        else:
-            st.info("ℹ️ Weather API (não configurado)")
+        # Status Tavily com debug
+        try:
+            tavily_key = st.secrets.get("TAVILY_API_KEY")
+            if tavily_key:
+                st.success(f"✅ Tavily Intelligence")
+                st.caption(f"Key: {tavily_key[:10]}..." if len(tavily_key) > 10 else "Key muito curta")
+            else:
+                st.info("ℹ️ Tavily (não configurado)")
+                st.caption("Chave não encontrada em st.secrets")
+        except Exception as e:
+            st.error(f"❌ Erro Tavily: {str(e)}")
+        
+        # Status Weather API com debug
+        try:
+            weather_key = st.secrets.get("WEATHER_API_KEY")
+            if weather_key:
+                st.success(f"✅ Weather API")
+                st.caption(f"Key: {weather_key[:10]}..." if len(weather_key) > 10 else "Key muito curta")
+            else:
+                st.info("ℹ️ Weather API (não configurado)")
+                st.caption("Chave não encontrada em st.secrets")
+        except Exception as e:
+            st.error(f"❌ Erro Weather: {str(e)}")
+        
+        # Debug completo dos secrets
+        with st.expander("🔍 Ver todos os secrets disponíveis"):
+            try:
+                secrets_keys = list(st.secrets.keys())
+                st.write(f"**Total de secrets:** {len(secrets_keys)}")
+                st.write("**Chaves encontradas:**")
+                for key in secrets_keys:
+                    st.write(f"- {key}")
+            except Exception as e:
+                st.error(f"Erro ao ler secrets: {str(e)}")
     
     # Formulário
     st.header("📝 Dados do Cliente")
@@ -992,18 +1018,18 @@ def main():
             dados_weather = {}
             ajustes_weather = {'ajuste_total': 0, 'reasons': []}
             
-            if usar_weather and "WEATHER_API_KEY" in st.secrets and dados_cep_obj:
-                if dados_cep_obj.get('geo_disponivel'):
-                    st.info("🌦️ Analisando condições climáticas...")
-                    try:
-                        weather_key = st.secrets["WEATHER_API_KEY"]
+            if usar_weather and dados_cep_obj:
+                try:
+                    weather_key = st.secrets.get("WEATHER_API_KEY")
+                    if weather_key and dados_cep_obj.get('geo_disponivel'):
+                        st.info("🌦️ Analisando condições climáticas...")
                         analise_clima = analisar_risco_climatico(dados_cep_obj, weather_key)
                         
                         dados_weather = analise_clima.get('dados_clima', {})
                         ajustes_weather['ajuste_total'] = analise_clima['ajuste']
                         ajustes_weather['reasons'] = analise_clima['reasons']
-                    except Exception as e:
-                        st.warning(f"Erro ao analisar clima: {str(e)}")
+                except Exception as e:
+                    st.warning(f"⚠️ Erro ao analisar clima: {str(e)}")
             
             progress_bar.progress(65)
             
@@ -1011,69 +1037,75 @@ def main():
             dados_tavily = {}
             ajustes_tavily = {'ajuste_total': 0, 'reasons': [], 'resumos': []}
             
-            if usar_tavily and "TAVILY_API_KEY" in st.secrets:
-                st.info("🧠 Analisando com Tavily Intelligence...")
-                tavily_key = st.secrets["TAVILY_API_KEY"]
-                
-                # Risco Regional
-                if dados_cep_obj and dados_cep_obj.get('status') == 'success':
-                    try:
-                        analise_regiao = analisar_risco_regional_tavily(
-                            dados_cep_obj.get('municipio', ''),
-                            dados_cep_obj.get('uf', ''),
-                            tavily_key
-                        )
-                        if analise_regiao['ajuste'] != 0 or analise_regiao['reasons']:
-                            dados_tavily['risco_regional'] = analise_regiao
-                            ajustes_tavily['ajuste_total'] += analise_regiao['ajuste']
-                            ajustes_tavily['reasons'].extend(analise_regiao['reasons'])
-                            if analise_regiao['resumo']:
-                                ajustes_tavily['resumos'].append({
-                                    'tipo': 'Risco Regional',
-                                    'resumo': analise_regiao['resumo']
-                                })
-                    except:
-                        pass
-                
-                # Veículo mais roubado
-                if dados_fipe_obj and dados_fipe_obj.get('status') == 'success':
-                    try:
-                        analise_veiculo = analisar_veiculo_tavily(
-                            fipe_marca,
-                            fipe_modelo,
-                            tavily_key
-                        )
-                        if analise_veiculo['ajuste'] != 0 or analise_veiculo['reasons']:
-                            dados_tavily['veiculo_roubado'] = analise_veiculo
-                            ajustes_tavily['ajuste_total'] += analise_veiculo['ajuste']
-                            ajustes_tavily['reasons'].extend(analise_veiculo['reasons'])
-                            if analise_veiculo['resumo']:
-                                ajustes_tavily['resumos'].append({
-                                    'tipo': 'Ranking Veículos Roubados',
-                                    'resumo': analise_veiculo['resumo']
-                                })
-                    except:
-                        pass
-                
-                # Reputação empresa
-                if dados_cnpj and dados_cnpj.get('status') == 'success':
-                    try:
-                        analise_reputacao = verificar_reputacao_empresa_tavily(
-                            dados_cnpj.get('razao_social', ''),
-                            dados_cnpj.get('cnpj', ''),
-                            tavily_key
-                        )
-                        if analise_reputacao['ajuste'] != 0 or analise_reputacao['reasons']:
-                            dados_tavily['reputacao_empresa'] = analise_reputacao
-                            ajustes_tavily['ajuste_total'] += analise_reputacao['ajuste']
-                            ajustes_tavily['reasons'].extend(analise_reputacao['reasons'])
-                            if analise_reputacao['resumo']:
-                                ajustes_tavily['resumos'].append({
-                                    'tipo': 'Reputação Empresa',
-                                    'resumo': analise_reputacao['resumo']
-                                })
-                    except:
-                        pass
+            if usar_tavily:
+                try:
+                    tavily_key = st.secrets.get("TAVILY_API_KEY")
+                    if tavily_key:
+                        st.info("🧠 Analisando com Tavily Intelligence...")
+                        
+                        # Risco Regional
+                        if dados_cep_obj and dados_cep_obj.get('status') == 'success':
+                            try:
+                                analise_regiao = analisar_risco_regional_tavily(
+                                    dados_cep_obj.get('municipio', ''),
+                                    dados_cep_obj.get('uf', ''),
+                                    tavily_key
+                                )
+                                if analise_regiao['ajuste'] != 0 or analise_regiao['reasons']:
+                                    dados_tavily['risco_regional'] = analise_regiao
+                                    ajustes_tavily['ajuste_total'] += analise_regiao['ajuste']
+                                    ajustes_tavily['reasons'].extend(analise_regiao['reasons'])
+                                    if analise_regiao['resumo']:
+                                        ajustes_tavily['resumos'].append({
+                                            'tipo': 'Risco Regional',
+                                            'resumo': analise_regiao['resumo']
+                                        })
+                            except Exception as e:
+                                st.warning(f"⚠️ Erro ao analisar região: {str(e)}")
+                        
+                        # Veículo mais roubado
+                        if dados_fipe_obj and dados_fipe_obj.get('status') == 'success':
+                            try:
+                                analise_veiculo = analisar_veiculo_tavily(
+                                    fipe_marca,
+                                    fipe_modelo,
+                                    tavily_key
+                                )
+                                if analise_veiculo['ajuste'] != 0 or analise_veiculo['reasons']:
+                                    dados_tavily['veiculo_roubado'] = analise_veiculo
+                                    ajustes_tavily['ajuste_total'] += analise_veiculo['ajuste']
+                                    ajustes_tavily['reasons'].extend(analise_veiculo['reasons'])
+                                    if analise_veiculo['resumo']:
+                                        ajustes_tavily['resumos'].append({
+                                            'tipo': 'Ranking Veículos Roubados',
+                                            'resumo': analise_veiculo['resumo']
+                                        })
+                            except Exception as e:
+                                st.warning(f"⚠️ Erro ao analisar veículo: {str(e)}")
+                        
+                        # Reputação empresa
+                        if dados_cnpj and dados_cnpj.get('status') == 'success':
+                            try:
+                                analise_reputacao = verificar_reputacao_empresa_tavily(
+                                    dados_cnpj.get('razao_social', ''),
+                                    dados_cnpj.get('cnpj', ''),
+                                    tavily_key
+                                )
+                                if analise_reputacao['ajuste'] != 0 or analise_reputacao['reasons']:
+                                    dados_tavily['reputacao_empresa'] = analise_reputacao
+                                    ajustes_tavily['ajuste_total'] += analise_reputacao['ajuste']
+                                    ajustes_tavily['reasons'].extend(analise_reputacao['reasons'])
+                                    if analise_reputacao['resumo']:
+                                        ajustes_tavily['resumos'].append({
+                                            'tipo': 'Reputação Empresa',
+                                            'resumo': analise_reputacao['resumo']
+                                        })
+                            except Exception as e:
+                                st.warning(f"⚠️ Erro ao analisar reputação: {str(e)}")
+                    else:
+                        st.warning("⚠️ Tavily API Key não configurada")
+                except Exception as e:
+                    st.warning(f"⚠️ Erro ao acessar Tavily: {str(e)}")
             
             progress_bar.progress(75)
             

@@ -300,21 +300,26 @@ def analisar_veiculo_tavily(marca: str, modelo: str, ano: str, api_key: str, tip
 # ================================
 # ANÁLISES TAVILY - REGIONAIS
 # ================================
-def analisar_regiao_tavily(municipio: str, uf: str, api_key: str, tipo: str):
+def analisar_regiao_tavily(municipio: str, uf: str, api_key: str, tipo: str, bairro: str = ''):
+    # Inclui bairro para análise mais específica
+    bairro_query = f"{bairro}" if bairro else ""
+    
     queries = {
-        'acidentes': f"estatísticas acidentes trânsito {municipio} {uf} 2024 DETRAN",
-        'vias': f"condição estradas {municipio} {uf} buracos pavimentação",
-        'fiscalizacao': f"radares fiscalização trânsito {municipio} {uf}",
-        'criminalidade': f"taxa roubo veículos {municipio} {uf} 2024",
-        'frota': f"frota veículos {municipio} {uf} DETRAN densidade"
+        'acidentes': f"estatísticas acidentes trânsito {bairro_query} {municipio} {uf} 2024 2025 DETRAN mortes colisões",
+        'vias': f"condição estradas buracos pavimentação {bairro_query} {municipio} {uf} 2024 2025",
+        'fiscalizacao': f"radares fiscalização blitz lei seca {bairro_query} {municipio} {uf} 2024 2025",
+        'criminalidade': f"roubo furto veículos {bairro_query} {municipio} {uf} Brasil 2024 2025 estatísticas",
+        'frota': f"número veículos frota {bairro_query} {municipio} {uf} DETRAN Brasil 2024 densidade",
+        'bairro': f"segurança criminalidade violência {bairro} {municipio} {uf} Brasil 2024 2025"
     }
     
     dominios = {
-        'acidentes': ['detran.', '.gov.br', 'dnit.gov.br'],
-        'vias': ['dnit.gov.br', 'cnt.org.br', '.gov.br'],
-        'fiscalizacao': ['detran.', 'policia', '.gov.br'],
-        'criminalidade': ['.gov.br', 'ssp.', 'policia'],
-        'frota': ['detran.', '.gov.br', 'denatran.gov.br']
+        'acidentes': ['detran.', '.gov.br', 'dnit.gov.br', 'prf.gov.br'],
+        'vias': ['dnit.gov.br', 'cnt.org.br', '.gov.br', 'der.'],
+        'fiscalizacao': ['detran.', 'policia', '.gov.br', 'prf.gov.br'],
+        'criminalidade': ['.gov.br', 'ssp.', 'policia', 'seguranca'],
+        'frota': ['detran.', '.gov.br', 'denatran.gov.br'],
+        'bairro': ['.gov.br', 'ssp.', 'pm.', 'seguranca']
     }
     
     resultado = consultar_tavily(queries[tipo], api_key)
@@ -329,41 +334,52 @@ def analisar_regiao_tavily(municipio: str, uf: str, api_key: str, tipo: str):
     
     if confiabilidade['nivel'] in ['ALTA', 'MÉDIA']:
         if tipo == 'acidentes':
-            if 'alto índice' in answer or 'muitos acidentes' in answer:
+            if 'alto índice' in answer or 'muitos acidentes' in answer or 'elevado' in answer:
                 ajuste = -10
                 reasons.append(f"{municipio}/{uf} - alto índice de acidentes (-10 pts)")
-            elif 'moderado' in answer:
+            elif 'moderado' in answer or 'médio' in answer:
                 ajuste = -5
                 reasons.append(f"{municipio}/{uf} - índice moderado de acidentes (-5 pts)")
         
         elif tipo == 'vias':
-            if 'péssima' in answer or 'buracos' in answer:
+            if 'péssima' in answer or 'buracos' in answer or 'má conservação' in answer:
                 ajuste = -6
                 reasons.append(f"{municipio}/{uf} - vias em más condições (-6 pts)")
-            elif 'regular' in answer:
+            elif 'regular' in answer or 'necessita melhorias' in answer:
                 ajuste = -3
                 reasons.append(f"{municipio}/{uf} - infraestrutura regular (-3 pts)")
         
         elif tipo == 'fiscalizacao':
-            if 'intensa fiscalização' in answer:
+            if 'intensa fiscalização' in answer or 'muitos radares' in answer:
                 ajuste = 4
                 reasons.append(f"{municipio}/{uf} - fiscalização intensa (+4 pts)")
-            elif 'pouca fiscalização' in answer:
+            elif 'pouca fiscalização' in answer or 'falta' in answer:
                 ajuste = -2
                 reasons.append(f"{municipio}/{uf} - fiscalização deficiente (-2 pts)")
         
         elif tipo == 'criminalidade':
-            if 'alto índice' in answer or 'crítico' in answer:
+            if 'alto índice' in answer or 'crítico' in answer or 'elevado' in answer:
                 ajuste = -8
                 reasons.append(f"{municipio}/{uf} - alto índice de roubo de veículos (-8 pts)")
-            elif 'moderado' in answer:
+            elif 'moderado' in answer or 'médio' in answer:
                 ajuste = -5
                 reasons.append(f"{municipio}/{uf} - criminalidade moderada (-5 pts)")
         
         elif tipo == 'frota':
-            if 'alta densidade' in answer or 'congestionamento' in answer:
+            if 'alta densidade' in answer or 'congestionamento' in answer or 'muitos veículos' in answer:
                 ajuste = -5
                 reasons.append(f"{municipio}/{uf} - alta densidade de veículos (-5 pts)")
+            elif 'crescimento' in answer:
+                ajuste = -2
+                reasons.append(f"{municipio}/{uf} - crescimento da frota (-2 pts)")
+        
+        elif tipo == 'bairro':
+            if 'violento' in answer or 'perigoso' in answer or 'alto índice' in answer:
+                ajuste = -7
+                reasons.append(f"Bairro {bairro} com alto índice de criminalidade (-7 pts)")
+            elif 'seguro' in answer or 'baixo índice' in answer:
+                ajuste = 2
+                reasons.append(f"Bairro {bairro} considerado seguro (+2 pts)")
     
     return {
         'ajuste': ajuste,
@@ -543,18 +559,20 @@ def main():
                 if dados_cep.get('status') == 'success':
                     municipio = dados_cep.get('municipio', '')
                     uf = dados_cep.get('uf', '')
+                    bairro = dados_cep.get('bairro', '')
                     
                     tipos_regiao = [
                         ('acidentes', '🚗 Acidentes Trânsito'),
                         ('vias', '🛣️ Qualidade das Vias'),
                         ('fiscalizacao', '🚔 Fiscalização'),
                         ('criminalidade', '⚠️ Criminalidade'),
-                        ('frota', '🚙 Densidade de Frota')
+                        ('frota', '🚙 Densidade de Frota'),
+                        ('bairro', '🏘️ Segurança do Bairro')
                     ]
                     
                     for idx, (tipo, nome) in enumerate(tipos_regiao):
                         st.caption(f"Analisando {nome.lower()}...")
-                        analise = analisar_regiao_tavily(municipio, uf, tavily_key, tipo)
+                        analise = analisar_regiao_tavily(municipio, uf, tavily_key, tipo, bairro)
                         ajuste_total += analise.get('ajuste', 0)
                         todas_reasons.extend(analise.get('reasons', []))
                         if analise.get('resumo'):
@@ -563,7 +581,7 @@ def main():
                                 'texto': analise['resumo'],
                                 'confiabilidade': analise.get('confiabilidade', {})
                             })
-                        progress_bar.progress(65 + (idx + 1) * 5)
+                        progress_bar.progress(65 + (idx + 1) * 4)
             
             progress_bar.progress(100)
             
@@ -598,11 +616,134 @@ def main():
             cor = "🟢" if score_final >= 70 else "🟡" if score_final >= 40 else "🔴"
             st.metric("Status", cor)
         
+        # CÁLCULO DETALHADO DO SCORE
+        st.subheader("🧮 Cálculo Detalhado do Score")
+        
+        with st.expander("📐 Ver Fórmula Completa", expanded=True):
+            st.markdown("""
+            ### Fórmula do Score:
+            ```
+            Score Final = Score Base + Σ(Ajustes)
+            
+            Onde:
+            - Score Base = 70 pontos (neutro)
+            - Σ(Ajustes) = Soma de todos os ajustes (positivos e negativos)
+            ```
+            """)
+            
+            # Tabela de cálculo
+            st.markdown("### Decomposição do Cálculo:")
+            
+            col_calc1, col_calc2 = st.columns([3, 1])
+            
+            with col_calc1:
+                st.write("**Score Base (Neutro)**")
+            with col_calc2:
+                st.write(f"**+{score_base:.1f}**")
+            
+            st.markdown("---")
+            
+            # Ajustes Positivos
+            ajustes_positivos = [r for r in todas_reasons if any(c in r for c in ['+'])]
+            ajustes_negativos = [r for r in todas_reasons if any(c in r for c in ['-'])]
+            
+            if ajustes_positivos:
+                st.markdown("#### ✅ Ajustes Positivos:")
+                for reason in ajustes_positivos:
+                    # Extrai o valor
+                    import re
+                    match = re.search(r'\+(\d+)', reason)
+                    if match:
+                        valor = match.group(1)
+                        st.write(f"• {reason}")
+            
+            if ajustes_negativos:
+                st.markdown("#### ❌ Ajustes Negativos:")
+                for reason in ajustes_negativos:
+                    st.write(f"• {reason}")
+            
+            st.markdown("---")
+            
+            col_total1, col_total2 = st.columns([3, 1])
+            
+            with col_total1:
+                st.write("**Total de Ajustes**")
+            with col_total2:
+                st.write(f"**{ajuste_total:+.1f}**")
+            
+            st.markdown("---")
+            
+            # Resultado Final
+            st.markdown("### 🎯 Resultado Final:")
+            st.code(f"""
+Score Base:        {score_base:.1f} pts
+Total Ajustes:     {ajuste_total:+.1f} pts
+─────────────────────────
+Score Final:       {score_final:.1f} pts
+Banda de Risco:    {banda}
+            """)
+            
+            # Explicação da Banda
+            st.info(f"""
+            **Interpretação da Banda "{banda}":**
+            
+            • MUITO BAIXO (80-100): Risco mínimo - Perfil excelente
+            • BAIXO (60-79): Risco reduzido - Perfil bom
+            • MÉDIO (40-59): Risco moderado - Atenção recomendada
+            • ALTO (20-39): Risco elevado - Requer cuidados
+            • MUITO ALTO (0-19): Risco crítico - Perfil preocupante
+            """)
+            
+            # Contexto dos Ajustes
+            st.markdown("### 📊 Por Que Esses Fatores Importam?")
+            
+            st.markdown("""
+            **Contexto Estatístico:**
+            
+            🚗 **Densidade de Frota + Qualidade das Vias:**
+            - Em regiões com **milhões de veículos** e **vias ruins**, a probabilidade de acidentes aumenta exponencialmente
+            - Exemplo: 1 veículo em via ruim = risco X | 1 milhão de veículos em vias ruins = risco 50X
+            - **Fórmula de Risco**: `Risco = (Frota × Condição_Vias × Taxa_Acidentes) / Fiscalização`
+            
+            ⚠️ **Criminalidade Regional:**
+            - Taxa de roubo/furto por 100 mil veículos
+            - Alto volume de veículos + Alta criminalidade = Alvo mais fácil
+            - Seu veículo específico se dilui na estatística, mas o risco regional permanece
+            
+            🚔 **Fiscalização (Fator Protetor):**
+            - Fiscalização intensa REDUZ acidentes em até 40%
+            - Por isso é o ÚNICO ajuste positivo regional (+4 pts)
+            - Equilibra o risco da alta densidade
+            
+            **Exemplo Prático:**
+            ```
+            Cenário A: São Paulo - Morumbi
+            - Frota: 8 milhões de veículos (-5 pts)
+            - Vias: Boas condições (0 pts)
+            - Fiscalização: Intensa (+4 pts)
+            - Criminalidade: Moderada (-5 pts)
+            Total: -6 pts (Risco equilibrado pela fiscalização)
+            
+            Cenário B: Cidade pequena - 50 mil veículos
+            - Frota: Baixa densidade (0 pts)
+            - Vias: Ruins (-6 pts)
+            - Fiscalização: Ausente (0 pts)
+            - Criminalidade: Baixa (0 pts)
+            Total: -6 pts (Mesmo risco final, mas fatores diferentes)
+            ```
+            """)
+        
         # Fatores
         if todas_reasons:
-            st.subheader("🎯 Fatores de Impacto")
+            st.subheader("🎯 Todos os Fatores de Impacto")
             for i, reason in enumerate(todas_reasons, 1):
-                st.write(f"{i}. {reason}")
+                # Identifica se é positivo ou negativo
+                if '+' in reason:
+                    st.success(f"{i}. {reason}")
+                elif '-' in reason:
+                    st.error(f"{i}. {reason}")
+                else:
+                    st.info(f"{i}. {reason}")
         
         # Insights Tavily
         if insights_tavily:

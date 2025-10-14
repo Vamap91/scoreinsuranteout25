@@ -533,33 +533,30 @@ def main():
                     # Recalls
                     st.caption("🔧 Analisando recalls...")
                     analise = analisar_veiculo_recalls(marca_input, modelo_input, ano, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '🔧 Recalls', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '🔧 Recalls', 'texto': analise['resumo']})
                     
                     progress_bar.progress(60)
                     
                     # Segurança
                     st.caption("🛡️ Analisando segurança...")
                     analise = analisar_veiculo_seguranca(marca_input, modelo_input, ano, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '🛡️ Segurança', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '🛡️ Segurança', 'texto': analise['resumo']})
                     
                     progress_bar.progress(70)
                     
                     # Roubos
                     st.caption("🚨 Verificando ranking de roubos...")
                     analise = analisar_veiculo_roubado(marca_input, modelo_input, tavily_key)
-                    if analise['ajuste'] != 0:
-                        ajuste_total += analise['ajuste']
-                        todas_reasons.extend(analise['reasons'])
-                        if analise['resumo']:
-                            insights_tavily.append({'tipo': '🚨 Ranking Roubos', 'texto': analise['resumo']})
+                    ajuste_total += analise['ajuste']
+                    todas_reasons.extend(analise['reasons'])
+                    if analise['resumo']:
+                        insights_tavily.append({'tipo': '🚨 Ranking Roubos', 'texto': analise['resumo']})
                 
                 # Análises Regionais
                 if dados_cep.get('status') == 'success':

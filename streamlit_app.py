@@ -165,7 +165,9 @@ def consultar_tavily(query: str, api_key: str) -> Optional[Dict]:
             "query": query,
             "search_depth": "basic",
             "include_answer": True,
-            "max_results": 3
+            "max_results": 5,  # Aumentado para mais contexto
+            "include_domains": [],
+            "exclude_domains": ["facebook.com", "instagram.com", "twitter.com"]  # Evita redes sociais
         }
         
         response = requests.post(TAVILY_API_URL, json=payload, timeout=15)
@@ -400,54 +402,94 @@ def analisar_perfil_profissional(nome: str, api_key: str) -> Dict:
         return {'ajuste': 0, 'reasons': [], 'resumo': ''}
     
     answer = resultado.get('answer', '').lower()
+    results = resultado.get('results', [])
+    
+    # Verifica se há fontes confiáveis (LinkedIn, empresas conhecidas)
+    fontes_confiaveis = any('linkedin.com' in r.get('url', '') for r in results)
+    
     ajuste = 0
     reasons = []
     
-    if any(palavra in answer for palavra in ['executivo', 'diretor', 'gerente']):
-        ajuste = 5
-        reasons.append(f"Perfil profissional sólido identificado (+5 pts)")
-    elif any(palavra in answer for palavra in ['empresário', 'ceo']):
-        ajuste = 3
-        reasons.append(f"Perfil empreendedor identificado (+3 pts)")
+    # IMPORTANTE: Só aplica ajuste se tiver fonte confiável
+    if fontes_confiaveis:
+        if any(palavra in answer for palavra in ['executivo', 'diretor', 'gerente']):
+            ajuste = 5
+            reasons.append(f"Perfil profissional sólido identificado (+5 pts)")
+        elif any(palavra in answer for palavra in ['empresário', 'ceo']):
+            ajuste = 3
+            reasons.append(f"Perfil empreendedor identificado (+3 pts)")
     
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+    # Adiciona aviso se não houver fontes
+    resumo_final = resultado.get('answer', '')[:250]
+    if not fontes_confiaveis and resumo_final:
+        resumo_final = "⚠️ INFORMAÇÃO NÃO VERIFICADA - Nenhuma fonte oficial encontrada. " + resumo_final
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resumo_final}
 
 def analisar_processos_judiciais(nome: str, cpf: str, api_key: str) -> Dict:
-    query = f"{nome} CPF {cpf} processos judiciais tribunal condenação fraude"
+    query = f"{nome} CPF {cpf} processos judiciais tribunal condenação fraude site:jus.br OR site:gov.br"
     resultado = consultar_tavily(query, api_key)
     
     if resultado.get('status') != 'success':
         return {'ajuste': 0, 'reasons': [], 'resumo': ''}
     
     answer = resultado.get('answer', '').lower()
+    results = resultado.get('results', [])
+    
+    # Verifica se há fontes oficiais (.gov.br, .jus.br)
+    fontes_oficiais = any(
+        any(dominio in r.get('url', '') for dominio in ['.gov.br', '.jus.br', 'cnj.jus.br'])
+        for r in results
+    )
+    
     ajuste = 0
     reasons = []
     
-    if any(palavra in answer for palavra in ['condenação', 'fraude', 'estelionato']):
-        ajuste = -20
-        reasons.append(f"ALERTA - Histórico de processos graves (-20 pts)")
-    elif any(palavra in answer for palavra in ['processo', 'ação judicial']):
-        ajuste = -5
-        reasons.append(f"Processos judiciais identificados (-5 pts)")
+    # CRÍTICO: Só aplica penalização se for de fonte oficial
+    if fontes_oficiais:
+        if any(palavra in answer for palavra in ['condenação', 'fraude', 'estelionato']):
+            ajuste = -20
+            reasons.append(f"ALERTA - Histórico de processos graves (-20 pts)")
+        elif any(palavra in answer for palavra in ['processo', 'ação judicial']):
+            ajuste = -5
+            reasons.append(f"Processos judiciais identificados (-5 pts)")
     
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+    resumo_final = resultado.get('answer', '')[:250]
+    if not fontes_oficiais and resumo_final:
+        resumo_final = "⚠️ INFORMAÇÃO NÃO VERIFICADA - Nenhum registro oficial encontrado. " + resumo_final
+    elif not resumo_final:
+        resumo_final = "✅ Nenhum processo judicial encontrado em bases públicas."
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resumo_final}
 
 def analisar_sancoes_governo(nome: str, cpf: str, api_key: str) -> Dict:
-    query = f"{nome} CPF {cpf} CEIS CNEP sanções governo improbidade"
+    query = f"{nome} CPF {cpf} CEIS CNEP sanções site:portaldatransparencia.gov.br"
     resultado = consultar_tavily(query, api_key)
     
     if resultado.get('status') != 'success':
         return {'ajuste': 0, 'reasons': [], 'resumo': ''}
     
     answer = resultado.get('answer', '').lower()
+    results = resultado.get('results', [])
+    
+    # Verifica fonte oficial (Portal da Transparência)
+    fonte_oficial = any('portaldatransparencia.gov.br' in r.get('url', '') for r in results)
+    
     ajuste = 0
     reasons = []
     
-    if any(palavra in answer for palavra in ['sanção', 'cnep', 'ceis', 'improbidade']):
-        ajuste = -15
-        reasons.append(f"ALERTA - Sanções administrativas identificadas (-15 pts)")
+    if fonte_oficial:
+        if any(palavra in answer for palavra in ['sanção', 'cnep', 'ceis', 'improbidade']):
+            ajuste = -15
+            reasons.append(f"ALERTA - Sanções administrativas identificadas (-15 pts)")
     
-    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resultado.get('answer', '')[:250]}
+    resumo_final = resultado.get('answer', '')[:250]
+    if not fonte_oficial and resumo_final:
+        resumo_final = "⚠️ INFORMAÇÃO NÃO VERIFICADA - Consulte diretamente o Portal da Transparência. " + resumo_final
+    elif not resumo_final:
+        resumo_final = "✅ Nenhuma sanção encontrada em bases públicas."
+    
+    return {'ajuste': ajuste, 'reasons': reasons, 'resumo': resumo_final}
 
 # ================================
 # CÁLCULO DE AJUSTES BRASILAPI
@@ -793,6 +835,26 @@ def main():
         # Insights Tavily
         if insights_tavily:
             st.subheader("🧠 Insights Tavily Intelligence")
+            
+            st.warning("""
+            ⚠️ **AVISO IMPORTANTE SOBRE PRECISÃO:**
+            
+            As análises Tavily são baseadas em buscas na internet e podem conter:
+            - ❌ Informações desatualizadas
+            - ❌ Dados incorretos ou de fontes não oficiais
+            - ❌ Confusão entre pessoas com nomes similares
+            
+            **Recomendações:**
+            - ✅ Use apenas como **indicativo complementar**
+            - ✅ Sempre verifique em fontes oficiais (.gov.br, .jus.br)
+            - ✅ Não tome decisões baseadas apenas nestes dados
+            - ✅ Consulte bases oficiais: DETRAN, Tribunais, Portal da Transparência
+            
+            **Para dados pessoais sensíveis (processos, sanções):**
+            - Só são considerados se houver fonte oficial
+            - Informações não verificadas são sinalizadas com ⚠️
+            """)
+            
             for insight in insights_tavily:
                 with st.expander(f"{insight['tipo']}", expanded=False):
                     st.info(insight['texto'])

@@ -349,7 +349,7 @@ class CalculadoraScore:
         
         # Aplica multiplicador estadual
         multiplicador = self.sistema.MULTIPLICADORES_UF.get(uf, 1.0)
-        ajuste_uf = int((multiplicador - 1.0) * 100)
+        ajuste_uf = int((multiplicador - 1.0) * 200)  # Aumentado de 100 para 200
         
         if ajuste_uf != 0:
             self.adicionar_ajuste(
@@ -358,12 +358,19 @@ class CalculadoraScore:
                 f"Estado {uf} - Índice de segurança estadual"
             )
         
-        # Ajustes por capital vs interior
+        # Ajustes por capital vs interior (aumentado impacto)
         capitais = ['São Paulo', 'Rio de Janeiro', 'Belo Horizonte', 'Porto Alegre', 
-                   'Curitiba', 'Salvador', 'Recife', 'Fortaleza', 'Brasília']
+                   'Curitiba', 'Salvador', 'Recife', 'Fortaleza', 'Brasília',
+                   'Manaus', 'Belém', 'Goiânia', 'São Luís', 'Maceió']
         
         if municipio in capitais:
-            self.adicionar_ajuste('localizacao', -30, f"Capital {municipio} - maior densidade urbana")
+            self.adicionar_ajuste('localizacao', -50, f"Capital {municipio} - alta densidade urbana")
+        else:
+            # Bonus para cidades do interior seguras/turísticas
+            cidades_seguras = ['Canela', 'Gramado', 'Campos do Jordão', 'Blumenau', 
+                              'Pomerode', 'Holambra', 'Águas de Lindóia', 'Monte Verde']
+            if municipio in cidades_seguras:
+                self.adicionar_ajuste('localizacao', 30, f"{municipio} - cidade segura/turística")
     
     def calcular_score_veiculo(self, dados_fipe: Dict) -> None:
         """Calcula pontuação baseada no veículo"""
@@ -390,9 +397,23 @@ class CalculadoraScore:
         # Lista de veículos mais roubados (baseado em dados reais)
         veiculos_alto_risco = {
             'HB20': -40, 'Onix': -40, 'Gol': -35, 'Corolla': -50,
-            'Civic': -45, 'Hilux': -60, 'S10': -55, 'Compass': -50,
-            'Renegade': -45, 'Tracker': -40, 'Creta': -40, 'Kicks': -35
+            'Civic': -45, 'Hilux': -60, 'S10': -55, 'Compass': -70,  # Aumentado penalidade
+            'Renegade': -45, 'Tracker': -40, 'Creta': -40, 'Kicks': -35,
+            'T-Cross': -45, 'Nivus': -40, 'Polo': -35, 'Jetta': -45,
+            'Ranger': -55, 'Amarok': -50, 'Toro': -45, 'Strada': -30
         }
+        
+        # Lista de veículos econômicos (bonus)
+        veiculos_economicos = {
+            'Kwid': 40, 'Mobi': 35, 'Up': 30, 'Argo': 25,
+            'Sandero': 20, 'Logan': 20, 'Celta': 30, 'Palio': 25
+        }
+        
+        # Primeiro verifica se é econômico (bonus)
+        for veiculo, bonus in veiculos_economicos.items():
+            if veiculo.lower() in modelo.lower():
+                self.adicionar_ajuste('veiculo', bonus, f"{modelo} - veículo econômico seguro")
+                break
         
         for veiculo, penalidade in veiculos_alto_risco.items():
             if veiculo.lower() in modelo.lower():
@@ -414,20 +435,26 @@ class CalculadoraScore:
             
             if idade:
                 if idade >= 10:
-                    self.adicionar_ajuste('empresa', 80, f"Empresa sólida - {idade:.1f} anos de atividade")
+                    self.adicionar_ajuste('empresa', 90, f"Empresa sólida - {idade:.1f} anos de atividade")
                 elif idade >= 5:
-                    self.adicionar_ajuste('empresa', 50, f"Empresa estabelecida - {idade:.1f} anos")
+                    self.adicionar_ajuste('empresa', 60, f"Empresa estabelecida - {idade:.1f} anos")
                 elif idade >= 2:
-                    self.adicionar_ajuste('empresa', 30, f"Empresa em crescimento - {idade:.1f} anos")
+                    self.adicionar_ajuste('empresa', 40, f"Empresa em crescimento - {idade:.1f} anos")
                 else:
-                    self.adicionar_ajuste('empresa', 10, f"Empresa nova - {idade:.1f} anos")
+                    self.adicionar_ajuste('empresa', 20, f"Empresa nova - {idade:.1f} anos")
             
-            # Bonus por porte
+            # Bonus por porte (aumentado)
             porte = dados_cnpj.get('porte', '')
-            if 'GRANDE' in porte.upper():
-                self.adicionar_ajuste('empresa', 20, "Empresa de grande porte")
+            razao_social = dados_cnpj.get('razao_social', '').upper()
+            
+            # Empresas especiais (estatais, grandes corporações)
+            empresas_premium = ['PETROBRAS', 'BANCO DO BRASIL', 'CAIXA', 'CORREIOS', 'VALE']
+            if any(emp in razao_social for emp in empresas_premium):
+                self.adicionar_ajuste('empresa', 10, "Empresa estatal/premium")
+            elif 'GRANDE' in porte.upper():
+                self.adicionar_ajuste('empresa', 10, "Empresa de grande porte")
             elif 'MEDIO' in porte.upper():
-                self.adicionar_ajuste('empresa', 10, "Empresa de médio porte")
+                self.adicionar_ajuste('empresa', 5, "Empresa de médio porte")
         else:
             self.adicionar_ajuste('empresa', -80, f"Empresa não ativa: {situacao}")
     

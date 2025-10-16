@@ -1,813 +1,845 @@
+"""
+Módulo de Análise Avançada com Embeddings
+Sistema de Score Duplo: APIs + Similaridade Vetorial
+"""
+
+import pickle
+import pandas as pd
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import StandardScaler
 import streamlit as st
-import requests
-import json
-from datetime import datetime
-from typing import Dict, Optional
-import re
+from datetime import datetime, timedelta
 
-# ================================
-# CONFIGURAÇÃO
-# ================================
-st.set_page_config(
-    page_title="Sistema de Score de Risco",
-    page_icon="🛡️",
-    layout="wide"
-)
-
-BASE_URL_BRASILAPI = "https://brasilapi.com.br/api"
-TAVILY_API_URL = "https://api.tavily.com/search"
-
-# ================================
-# FUNÇÕES AUXILIARES
-# ================================
-def normalizar_cnpj(cnpj: str) -> str:
-    return re.sub(r'\D', '', cnpj)
-
-def normalizar_cep(cep: str) -> str:
-    return re.sub(r'\D', '', cep)
-
-def parse_valor_brl(valor_str: str) -> float:
-    if not valor_str:
-        return 0.0
-    valor_limpo = valor_str.replace('R$', '').replace(' ', '').replace('.', '').replace(',', '.')
-    try:
-        return float(valor_limpo)
-    except:
-        return 0.0
-
-def calcular_idade_empresa(data_inicio: str):
-    try:
-        inicio = datetime.strptime(data_inicio, '%Y-%m-%d')
-        hoje = datetime.now()
-        delta = hoje - inicio
-        return round(delta.days / 365.25, 2)
-    except:
-        return None
-
-# ================================
-# BRASILAPI
-# ================================
-def consultar_cnpj(cnpj: str):
-    try:
-        cnpj_limpo = normalizar_cnpj(cnpj)
-        url = f"{BASE_URL_BRASILAPI}/cnpj/v1/{cnpj_limpo}"
-        response = requests.get(url, timeout=10)
+class AnalisadorEmbeddings:
+    """
+    Análise de similaridade com base vetorizada
+    Segunda camada do sistema de score
+    """
+    
+    def __init__(self, caminho_pkl: str = None):
+        self.base_embeddings = None
+        self.scaler = StandardScaler()
+        self.estatisticas_base = {}
         
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'cnpj': data.get('cnpj'),
-                'razao_social': data.get('razao_social'),
-                'situacao_cadastral': data.get('descricao_situacao_cadastral'),
-                'data_inicio_atividade': data.get('data_inicio_atividade'),
-                'cnae_principal': data.get('cnae_fiscal'),
-                'cnae_descricao': data.get('cnae_fiscal_descricao'),
-                'porte': data.get('porte'),
-                'uf': data.get('uf'),
-                'municipio': data.get('municipio'),
-                'status': 'success'
-            }
-        return {'status': 'not_found'}
-    except:
-        return {'status': 'error'}
-
-def consultar_cep(cep: str):
-    try:
-        cep_limpo = normalizar_cep(cep)
-        url = f"{BASE_URL_BRASILAPI}/cep/v2/{cep_limpo}"
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'cep': data.get('cep'),
-                'uf': data.get('state'),
-                'municipio': data.get('city'),
-                'bairro': data.get('neighborhood'),
-                'logradouro': data.get('street'),
-                'status': 'success'
-            }
-        return {'status': 'not_found'}
-    except:
-        return {'status': 'error'}
-
-def consultar_fipe(marca: str, modelo: str):
-    try:
-        url_tabelas = f"{BASE_URL_BRASILAPI}/fipe/tabelas/v1"
-        resp_tab = requests.get(url_tabelas, timeout=10)
-        if resp_tab.status_code != 200:
-            return {'status': 'error'}
-        
-        tabelas = resp_tab.json()
-        tabela_ref = str(tabelas[-1]['codigo'])
-        
-        url_marcas = f"{BASE_URL_BRASILAPI}/fipe/marcas/v1/carros"
-        resp_marcas = requests.get(url_marcas, params={'tabela_referencia': tabela_ref}, timeout=10)
-        if resp_marcas.status_code != 200:
-            return {'status': 'error'}
-        
-        marcas = resp_marcas.json()
-        codigo_marca = None
-        
-        for m in marcas:
-            if marca.lower() in m['nome'].lower():
-                codigo_marca = m['valor']
-                break
-        
-        if not codigo_marca:
-            return {'status': 'not_found'}
-        
-        url_modelos = f"{BASE_URL_BRASILAPI}/fipe/marcas/{codigo_marca}/modelos"
-        resp_mod = requests.get(url_modelos, params={'tabela_referencia': tabela_ref}, timeout=10)
-        if resp_mod.status_code != 200:
-            return {'status': 'error'}
-        
-        modelos = resp_mod.json()
-        codigo_fipe = None
-        
-        for mod in modelos:
-            if modelo.lower() in mod['nome'].lower():
-                codigo_fipe = mod.get('codigo')
-                break
-        
-        if not codigo_fipe:
-            return {'status': 'not_found'}
-        
-        url_preco = f"{BASE_URL_BRASILAPI}/fipe/preco/v1/{codigo_fipe}"
-        resp_preco = requests.get(url_preco, params={'tabela_referencia': tabela_ref}, timeout=10)
-        if resp_preco.status_code != 200:
-            return {'status': 'error'}
-        
-        data = resp_preco.json()[0]
-        valor_str = data.get('valor', 'R$ 0,00')
-        
-        return {
-            'valor_formatado': valor_str,
-            'valor_numerico': parse_valor_brl(valor_str),
-            'marca': data.get('marca'),
-            'modelo': data.get('modelo'),
-            'ano_modelo': data.get('anoModelo'),
-            'status': 'success'
-        }
-    except:
-        return {'status': 'error'}
-
-# ================================
-# TAVILY API
-# ================================
-def consultar_tavily(query: str, api_key: str) -> Optional[Dict]:
-    try:
-        query_pt = f"{query} Brasil Portuguese"
-        
-        payload = {
-            "api_key": api_key,
-            "query": query_pt,
-            "search_depth": "basic",
-            "include_answer": True,
-            "max_results": 5,
-            "exclude_domains": ["facebook.com", "instagram.com", "twitter.com"]
-        }
-        
-        response = requests.post(TAVILY_API_URL, json=payload, timeout=15)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'answer': data.get('answer', ''),
-                'results': data.get('results', []),
-                'status': 'success'
-            }
-        return {'status': 'error'}
-    except:
-        return {'status': 'error'}
-
-def calcular_confiabilidade(resultado: Dict, dominios_confiaveis: list) -> Dict:
-    if resultado.get('status') != 'success':
-        return {'nivel': 'BAIXA', 'cor': 'red', 'emoji': '❌', 'motivo': 'Erro na consulta', 'fontes': '0/0'}
+        if caminho_pkl:
+            self.carregar_base(caminho_pkl)
     
-    results = resultado.get('results', [])
+    def carregar_base(self, caminho_pkl: str):
+        """Carrega base de embeddings do arquivo PKL"""
+        try:
+            with open(caminho_pkl, 'rb') as f:
+                self.base_embeddings = pickle.load(f)
+            
+            # Calcular estatísticas da base
+            self._calcular_estatisticas()
+            return True
+        except Exception as e:
+            st.error(f"Erro ao carregar PKL: {e}")
+            return False
     
-    if not results:
-        return {'nivel': 'BAIXA', 'cor': 'red', 'emoji': '❌', 'motivo': 'Nenhuma fonte encontrada', 'fontes': '0/0'}
-    
-    fontes_confiaveis = 0
-    total_fontes = len(results)
-    
-    for result in results:
-        url = result.get('url', '').lower()
-        if any(dominio in url for dominio in dominios_confiaveis):
-            fontes_confiaveis += 1
-    
-    percentual = (fontes_confiaveis / total_fontes) * 100 if total_fontes > 0 else 0
-    
-    if percentual >= 60:
-        return {
-            'nivel': 'ALTA',
-            'cor': 'green',
-            'emoji': '✅',
-            'motivo': 'Maioria de fontes oficiais',
-            'fontes': f'{fontes_confiaveis}/{total_fontes} fontes confiáveis'
-        }
-    elif percentual >= 30:
-        return {
-            'nivel': 'MÉDIA',
-            'cor': 'orange',
-            'emoji': '⚠️',
-            'motivo': 'Algumas fontes oficiais',
-            'fontes': f'{fontes_confiaveis}/{total_fontes} fontes confiáveis'
-        }
-    else:
-        return {
-            'nivel': 'BAIXA',
-            'cor': 'red',
-            'emoji': '❌',
-            'motivo': 'Poucas fontes oficiais',
-            'fontes': f'{fontes_confiaveis}/{total_fontes} fontes confiáveis'
-        }
-
-# ================================
-# ANÁLISES TAVILY - VEICULARES
-# ================================
-def analisar_veiculo_tavily(marca: str, modelo: str, ano: str, api_key: str, tipo: str):
-    queries = {
-        'recalls': f"recall {marca} {modelo} {ano} Procon defeitos",
-        'custo': f"custo manutenção {marca} {modelo} preço peças",
-        'seguranca': f"Latin NCAP {marca} {modelo} {ano} crash test estrelas",
-        'roubos': f"ranking veículos roubados 2024 {marca} {modelo}"
-    }
-    
-    dominios = {
-        'recalls': ['procon.', '.gov.br', 'inmetro.gov.br'],
-        'custo': ['quatrorodas.com', 'autoesporte.com'],
-        'seguranca': ['latinncap.com', 'autoesporte.com'],
-        'roubos': ['.gov.br', 'ssp.', 'policia']
-    }
-    
-    resultado = consultar_tavily(queries[tipo], api_key)
-    confiabilidade = calcular_confiabilidade(resultado, dominios[tipo])
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': '', 'confiabilidade': confiabilidade}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if confiabilidade['nivel'] in ['ALTA', 'MÉDIA']:
-        if tipo == 'recalls':
-            if 'recall crítico' in answer or 'defeito grave' in answer:
-                ajuste = -8
-                reasons.append(f"{marca} {modelo} com recall crítico (-8 pts)")
-            elif 'recall' in answer:
-                ajuste = -3
-                reasons.append(f"{marca} {modelo} possui recall ativo (-3 pts)")
-        
-        elif tipo == 'custo':
-            if 'custo elevado' in answer or 'caro' in answer:
-                ajuste = -5
-                reasons.append(f"{marca} {modelo} - alto custo de manutenção (-5 pts)")
-            elif 'econômico' in answer or 'barato' in answer:
-                ajuste = 2
-                reasons.append(f"{marca} {modelo} - manutenção econômica (+2 pts)")
-        
-        elif tipo == 'seguranca':
-            if '5 estrelas' in answer:
-                ajuste = 5
-                reasons.append(f"{marca} {modelo} - 5 estrelas Latin NCAP (+5 pts)")
-            elif '4 estrelas' in answer:
-                ajuste = 3
-                reasons.append(f"{marca} {modelo} - 4 estrelas Latin NCAP (+3 pts)")
-            elif '2 estrelas' in answer or '1 estrela' in answer:
-                ajuste = -5
-                reasons.append(f"{marca} {modelo} - baixa segurança (-5 pts)")
-        
-        elif tipo == 'roubos':
-            if modelo.lower() in answer:
-                if 'top 5' in answer or 'mais roubado' in answer:
-                    ajuste = -10
-                    reasons.append(f"{marca} {modelo} entre os MAIS roubados (-10 pts)")
-                elif 'top 10' in answer:
-                    ajuste = -5
-                    reasons.append(f"{marca} {modelo} em ranking de roubos (-5 pts)")
-    
-    return {
-        'ajuste': ajuste,
-        'reasons': reasons,
-        'resumo': resultado.get('answer', '')[:250],
-        'confiabilidade': confiabilidade
-    }
-
-# ================================
-# ANÁLISES TAVILY - REGIONAIS
-# ================================
-def analisar_regiao_tavily(municipio: str, uf: str, api_key: str, tipo: str, bairro: str = ''):
-    # Inclui bairro para análise mais específica
-    bairro_query = f"{bairro}" if bairro else ""
-    
-    queries = {
-        'acidentes': f"estatísticas acidentes trânsito {bairro_query} {municipio} {uf} 2024 2025 DETRAN mortes colisões",
-        'vias': f"condição estradas buracos pavimentação {bairro_query} {municipio} {uf} 2024 2025",
-        'fiscalizacao': f"radares fiscalização blitz lei seca {bairro_query} {municipio} {uf} 2024 2025",
-        'criminalidade': f"roubo furto veículos {bairro_query} {municipio} {uf} Brasil 2024 2025 estatísticas",
-        'frota': f"número veículos frota {bairro_query} {municipio} {uf} DETRAN Brasil 2024 densidade",
-        'bairro': f"segurança criminalidade violência {bairro} {municipio} {uf} Brasil 2024 2025"
-    }
-    
-    dominios = {
-        'acidentes': ['detran.', '.gov.br', 'dnit.gov.br', 'prf.gov.br'],
-        'vias': ['dnit.gov.br', 'cnt.org.br', '.gov.br', 'der.'],
-        'fiscalizacao': ['detran.', 'policia', '.gov.br', 'prf.gov.br'],
-        'criminalidade': ['.gov.br', 'ssp.', 'policia', 'seguranca'],
-        'frota': ['detran.', '.gov.br', 'denatran.gov.br'],
-        'bairro': ['.gov.br', 'ssp.', 'pm.', 'seguranca']
-    }
-    
-    resultado = consultar_tavily(queries[tipo], api_key)
-    confiabilidade = calcular_confiabilidade(resultado, dominios[tipo])
-    
-    if resultado.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': [], 'resumo': '', 'confiabilidade': confiabilidade}
-    
-    answer = resultado.get('answer', '').lower()
-    ajuste = 0
-    reasons = []
-    
-    if confiabilidade['nivel'] in ['ALTA', 'MÉDIA']:
-        if tipo == 'acidentes':
-            if 'alto índice' in answer or 'muitos acidentes' in answer or 'elevado' in answer:
-                ajuste = -10
-                reasons.append(f"{municipio}/{uf} - alto índice de acidentes (-10 pts)")
-            elif 'moderado' in answer or 'médio' in answer:
-                ajuste = -5
-                reasons.append(f"{municipio}/{uf} - índice moderado de acidentes (-5 pts)")
-        
-        elif tipo == 'vias':
-            if 'péssima' in answer or 'buracos' in answer or 'má conservação' in answer:
-                ajuste = -6
-                reasons.append(f"{municipio}/{uf} - vias em más condições (-6 pts)")
-            elif 'regular' in answer or 'necessita melhorias' in answer:
-                ajuste = -3
-                reasons.append(f"{municipio}/{uf} - infraestrutura regular (-3 pts)")
-        
-        elif tipo == 'fiscalizacao':
-            if 'intensa fiscalização' in answer or 'muitos radares' in answer:
-                ajuste = 4
-                reasons.append(f"{municipio}/{uf} - fiscalização intensa (+4 pts)")
-            elif 'pouca fiscalização' in answer or 'falta' in answer:
-                ajuste = -2
-                reasons.append(f"{municipio}/{uf} - fiscalização deficiente (-2 pts)")
-        
-        elif tipo == 'criminalidade':
-            if 'alto índice' in answer or 'crítico' in answer or 'elevado' in answer:
-                ajuste = -8
-                reasons.append(f"{municipio}/{uf} - alto índice de roubo de veículos (-8 pts)")
-            elif 'moderado' in answer or 'médio' in answer:
-                ajuste = -5
-                reasons.append(f"{municipio}/{uf} - criminalidade moderada (-5 pts)")
-        
-        elif tipo == 'frota':
-            if 'alta densidade' in answer or 'congestionamento' in answer or 'muitos veículos' in answer:
-                ajuste = -5
-                reasons.append(f"{municipio}/{uf} - alta densidade de veículos (-5 pts)")
-            elif 'crescimento' in answer:
-                ajuste = -2
-                reasons.append(f"{municipio}/{uf} - crescimento da frota (-2 pts)")
-        
-        elif tipo == 'bairro':
-            if 'violento' in answer or 'perigoso' in answer or 'alto índice' in answer:
-                ajuste = -7
-                reasons.append(f"Bairro {bairro} com alto índice de criminalidade (-7 pts)")
-            elif 'seguro' in answer or 'baixo índice' in answer:
-                ajuste = 2
-                reasons.append(f"Bairro {bairro} considerado seguro (+2 pts)")
-    
-    return {
-        'ajuste': ajuste,
-        'reasons': reasons,
-        'resumo': resultado.get('answer', '')[:250],
-        'confiabilidade': confiabilidade
-    }
-
-# ================================
-# AJUSTES BRASILAPI
-# ================================
-def calcular_ajuste_cnpj(dados_cnpj):
-    if dados_cnpj.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': []}
-    
-    ajuste = 0
-    reasons = []
-    
-    situacao = dados_cnpj.get('situacao_cadastral', '')
-    if 'ATIVA' in situacao.upper():
-        idade = calcular_idade_empresa(dados_cnpj.get('data_inicio_atividade', ''))
-        if idade and idade >= 10:
-            ajuste += 5
-            reasons.append(f"Empresa ativa há {idade:.1f} anos (+5 pts)")
-        elif idade and idade >= 5:
-            ajuste += 3
-            reasons.append(f"Empresa ativa há {idade:.1f} anos (+3 pts)")
-    else:
-        ajuste -= 10
-        reasons.append(f"Empresa: {situacao} (-10 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons}
-
-def calcular_ajuste_fipe(dados_fipe):
-    if dados_fipe.get('status') != 'success':
-        return {'ajuste': 0, 'reasons': []}
-    
-    ajuste = 0
-    reasons = []
-    valor = dados_fipe.get('valor_numerico', 0)
-    
-    if valor >= 100000:
-        ajuste -= 8
-        reasons.append(f"Veículo alto valor: R$ {valor:,.2f} (-8 pts)")
-    elif valor >= 60000:
-        ajuste -= 5
-        reasons.append(f"Veículo valor elevado: R$ {valor:,.2f} (-5 pts)")
-    elif valor >= 30000:
-        ajuste -= 2
-        reasons.append(f"Veículo valor médio: R$ {valor:,.2f} (-2 pts)")
-    
-    return {'ajuste': ajuste, 'reasons': reasons}
-
-# ================================
-# INTERFACE STREAMLIT
-# ================================
-def main():
-    st.title("🛡️ Sistema de Score de Risco")
-    st.markdown("**Análise inteligente com Tavily + BrasilAPI**")
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("ℹ️ Informações")
-        st.markdown("""
-        **APIs Utilizadas:**
-        - 🌐 BrasilAPI (Pública)
-        - 🧠 Tavily Intelligence
-        
-        **Status:**
-        """)
-        
-        st.success("✅ BrasilAPI")
-        
-        tavily_key = st.secrets.get("TAVILY_API_KEY", None)
-        if tavily_key:
-            st.success("✅ Tavily API")
-        else:
-            st.warning("⚠️ Tavily não configurada")
-    
-    # Formulário
-    st.header("📋 Dados para Análise")
-    
-    cep_input = st.text_input("CEP", placeholder="00000-000")
-    cnpj_input = st.text_input("CNPJ Empregador (Opcional)", placeholder="00.000.000/0000-00")
-    
-    st.subheader("🚗 Dados do Veículo")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        marca_input = st.text_input("Marca", placeholder="Ex: Volkswagen")
-    with col2:
-        modelo_input = st.text_input("Modelo", placeholder="Ex: Gol")
-    with col3:
-        ano_input = st.text_input("Ano", placeholder="Ex: 2020")
-    
-    # Botão
-    if st.button("🚀 Analisar Risco", type="primary", use_container_width=True):
-        
-        if not cep_input:
-            st.error("⚠️ Preencha o CEP")
+    def _calcular_estatisticas(self):
+        """Calcula estatísticas gerais da base para benchmarking"""
+        if self.base_embeddings is None:
             return
         
-        with st.spinner("🔄 Processando análise..."):
-            progress_bar = st.progress(0)
-            
-            score_base = 70.0
-            ajuste_total = 0
-            todas_reasons = []
-            dados_brasilapi = {}
-            insights_tavily = []
-            
-            # CEP
-            st.info("📍 Consultando CEP...")
-            progress_bar.progress(20)
-            
-            dados_cep = consultar_cep(cep_input)
-            if dados_cep.get('status') == 'success':
-                dados_brasilapi['cep'] = dados_cep
-            
-            # CNPJ
-            if cnpj_input:
-                st.info("🏢 Consultando CNPJ...")
-                progress_bar.progress(30)
-                
-                dados_cnpj = consultar_cnpj(cnpj_input)
-                if dados_cnpj.get('status') == 'success':
-                    dados_brasilapi['cnpj'] = dados_cnpj
-                    ajuste_cnpj = calcular_ajuste_cnpj(dados_cnpj)
-                    ajuste_total += ajuste_cnpj['ajuste']
-                    todas_reasons.extend(ajuste_cnpj['reasons'])
-            
-            # FIPE
-            if marca_input and modelo_input:
-                st.info("🚗 Consultando FIPE...")
-                progress_bar.progress(40)
-                
-                dados_fipe = consultar_fipe(marca_input, modelo_input)
-                if dados_fipe.get('status') == 'success':
-                    dados_brasilapi['fipe'] = dados_fipe
-                    ajuste_fipe = calcular_ajuste_fipe(dados_fipe)
-                    ajuste_total += ajuste_fipe['ajuste']
-                    todas_reasons.extend(ajuste_fipe['reasons'])
-            
-            progress_bar.progress(50)
-            
-            # TAVILY
-            tavily_key = st.secrets.get("TAVILY_API_KEY")
-            
-            if tavily_key:
-                st.info("🧠 Executando análises Tavily...")
-                
-                # Análises Veiculares
-                if marca_input and modelo_input:
-                    ano = ano_input if ano_input else '2020'
-                    
-                    tipos_veiculo = [
-                        ('recalls', '🔧 Recalls'),
-                        ('custo', '💰 Custo Manutenção'),
-                        ('seguranca', '🛡️ Segurança'),
-                        ('roubos', '🚨 Ranking Roubos')
-                    ]
-                    
-                    for idx, (tipo, nome) in enumerate(tipos_veiculo):
-                        st.caption(f"Analisando {nome.lower()}...")
-                        analise = analisar_veiculo_tavily(marca_input, modelo_input, ano, tavily_key, tipo)
-                        ajuste_total += analise.get('ajuste', 0)
-                        todas_reasons.extend(analise.get('reasons', []))
-                        if analise.get('resumo'):
-                            insights_tavily.append({
-                                'tipo': nome,
-                                'texto': analise['resumo'],
-                                'confiabilidade': analise.get('confiabilidade', {})
-                            })
-                        progress_bar.progress(50 + (idx + 1) * 3)
-                
-                # Análises Regionais
-                if dados_cep.get('status') == 'success':
-                    municipio = dados_cep.get('municipio', '')
-                    uf = dados_cep.get('uf', '')
-                    bairro = dados_cep.get('bairro', '')
-                    
-                    tipos_regiao = [
-                        ('acidentes', '🚗 Acidentes Trânsito'),
-                        ('vias', '🛣️ Qualidade das Vias'),
-                        ('fiscalizacao', '🚔 Fiscalização'),
-                        ('criminalidade', '⚠️ Criminalidade'),
-                        ('frota', '🚙 Densidade de Frota'),
-                        ('bairro', '🏘️ Segurança do Bairro')
-                    ]
-                    
-                    for idx, (tipo, nome) in enumerate(tipos_regiao):
-                        st.caption(f"Analisando {nome.lower()}...")
-                        analise = analisar_regiao_tavily(municipio, uf, tavily_key, tipo, bairro)
-                        ajuste_total += analise.get('ajuste', 0)
-                        todas_reasons.extend(analise.get('reasons', []))
-                        if analise.get('resumo'):
-                            insights_tavily.append({
-                                'tipo': nome,
-                                'texto': analise['resumo'],
-                                'confiabilidade': analise.get('confiabilidade', {})
-                            })
-                        progress_bar.progress(65 + (idx + 1) * 4)
-            
-            progress_bar.progress(100)
-            
-            # Calcula score final
-            score_final = max(0, min(100, score_base + ajuste_total))
-            
-            if score_final >= 80:
-                banda = 'MUITO BAIXO'
-            elif score_final >= 60:
-                banda = 'BAIXO'
-            elif score_final >= 40:
-                banda = 'MÉDIO'
-            elif score_final >= 20:
-                banda = 'ALTO'
-            else:
-                banda = 'MUITO ALTO'
+        df = pd.DataFrame(self.base_embeddings)
         
-        st.success("✅ Análise concluída!")
+        self.estatisticas_base = {
+            'total_clientes': len(df),
+            'media_sinistros_12m': df['historico_sinistros.total_sinistros_12m'].mean(),
+            'mediana_sinistros_12m': df['historico_sinistros.total_sinistros_12m'].median(),
+            'percentil_90_sinistros': df['historico_sinistros.total_sinistros_12m'].quantile(0.9),
+            'valor_medio_sinistro': df['historico_sinistros.valor_medio_sinistro'].mean(),
+            'taxa_sinistralidade': (df['historico_sinistros.total_sinistros_12m'] > 0).mean(),
+            
+            # Análise por veículo
+            'veiculos_mais_sinistrados': df.groupby(['veiculo.marca', 'veiculo.modelo'])[
+                'historico_sinistros.total_sinistros_12m'
+            ].mean().nlargest(10).to_dict(),
+            
+            # Análise por região (CEP)
+            'regioes_criticas': df.groupby(df['localizacao.cep'].str[:5])[
+                'historico_sinistros.total_sinistros_12m'
+            ].mean().nlargest(10).to_dict(),
+            
+            # Análise por tipo de sinistro
+            'tipos_sinistro': df['historico_sinistros.tipo_predominante'].value_counts().to_dict(),
+            
+            # Peças mais substituídas
+            'pecas_frequentes': self._analisar_pecas(df)
+        }
+    
+    def _analisar_pecas(self, df: pd.DataFrame) -> Dict:
+        """Analisa as peças mais frequentemente substituídas"""
+        todas_pecas = []
+        for pecas in df['historico_sinistros.pecas_substituidas_12m'].dropna():
+            if isinstance(pecas, str):
+                todas_pecas.extend([p.strip() for p in pecas.split(',')])
         
-        # RESULTADOS
-        st.header("📊 Resultado da Análise")
+        from collections import Counter
+        return dict(Counter(todas_pecas).most_common(10))
+    
+    def vetorizar_cliente(self, dados_cliente: Dict) -> np.ndarray:
+        """
+        Converte dados do cliente em vetor numérico para comparação
+        """
+        # Features numéricas principais
+        features = []
+        
+        # CEP - converter primeiros 5 dígitos em número
+        cep = dados_cliente.get('localizacao', {}).get('cep', '00000')
+        features.append(int(cep[:5]))
+        
+        # Veículo
+        veiculo = dados_cliente.get('veiculo', {})
+        features.append(veiculo.get('valor_fipe', 0))
+        features.append(veiculo.get('ano_fabricacao', 2020))
+        features.append(veiculo.get('ano_modelo', 2021))
+        
+        # Categoria do veículo (one-hot simplificado)
+        categorias = ['Passeio', 'SUV', 'Pickup', 'Moto', 'Caminhão']
+        cat_veiculo = veiculo.get('categoria', 'Passeio')
+        for cat in categorias:
+            features.append(1 if cat == cat_veiculo else 0)
+        
+        # Combustível (one-hot)
+        combustiveis = ['Flex', 'Gasolina', 'Diesel', 'Elétrico', 'Híbrido']
+        comb_veiculo = veiculo.get('combustivel', 'Flex')
+        for comb in combustiveis:
+            features.append(1 if comb == comb_veiculo else 0)
+        
+        # Marca/Modelo (hash simples para encoding)
+        marca_hash = hash(veiculo.get('marca', '')) % 1000
+        modelo_hash = hash(veiculo.get('modelo', '')) % 1000
+        features.append(marca_hash)
+        features.append(modelo_hash)
+        
+        # Histórico (se disponível - para clientes existentes)
+        historico = dados_cliente.get('historico_sinistros', {})
+        features.append(historico.get('total_sinistros_12m', 0))
+        features.append(historico.get('total_sinistros_24m', 0))
+        features.append(historico.get('valor_total_sinistros_12m', 0))
+        features.append(historico.get('frequencia_anual', 0))
+        features.append(historico.get('dias_desde_ultimo_sinistro', 365))
+        
+        return np.array(features)
+    
+    def encontrar_similares(self, dados_cliente: Dict, k: int = 100) -> pd.DataFrame:
+        """
+        Encontra os K clientes mais similares na base
+        """
+        if self.base_embeddings is None:
+            return pd.DataFrame()
+        
+        # Vetorizar cliente atual
+        vetor_cliente = self.vetorizar_cliente(dados_cliente).reshape(1, -1)
+        
+        # Vetorizar toda a base (cache isso em produção)
+        vetores_base = np.array([
+            self.vetorizar_cliente(cliente) 
+            for cliente in self.base_embeddings
+        ])
+        
+        # Normalizar vetores
+        vetor_cliente_norm = self.scaler.fit_transform(vetor_cliente)
+        vetores_base_norm = self.scaler.transform(vetores_base)
+        
+        # Calcular similaridade
+        similaridades = cosine_similarity(vetor_cliente_norm, vetores_base_norm)[0]
+        
+        # Pegar top K mais similares
+        indices_similares = np.argsort(similaridades)[-k:][::-1]
+        
+        # Criar DataFrame com resultados
+        clientes_similares = []
+        for idx in indices_similares:
+            cliente = self.base_embeddings[idx]
+            clientes_similares.append({
+                'similaridade': similaridades[idx],
+                'sinistros_12m': cliente['historico_sinistros']['total_sinistros_12m'],
+                'valor_sinistros_12m': cliente['historico_sinistros']['valor_total_sinistros_12m'],
+                'tipo_sinistro': cliente['historico_sinistros']['tipo_predominante'],
+                'marca': cliente['veiculo']['marca'],
+                'modelo': cliente['veiculo']['modelo'],
+                'cep': cliente['localizacao']['cep'][:5] + 'xxx',  # Privacy
+                'valor_fipe': cliente['veiculo']['valor_fipe']
+            })
+        
+        return pd.DataFrame(clientes_similares)
+    
+    def calcular_score_similaridade(self, dados_cliente: Dict) -> Dict:
+        """
+        Calcula score baseado em clientes similares
+        Retorna score de 0-1000 e análise detalhada
+        """
+        # Encontrar similares
+        similares = self.encontrar_similares(dados_cliente, k=100)
+        
+        if similares.empty:
+            return {
+                'score': 500,
+                'confianca': 'BAIXA',
+                'analise': 'Sem dados suficientes para análise'
+            }
+        
+        # Filtrar apenas os muito similares (>80% similaridade)
+        muito_similares = similares[similares['similaridade'] > 0.8]
+        
+        if len(muito_similares) < 10:
+            confianca = 'BAIXA'
+        elif len(muito_similares) < 30:
+            confianca = 'MÉDIA'
+        else:
+            confianca = 'ALTA'
+        
+        # Calcular métricas dos similares
+        media_sinistros = muito_similares['sinistros_12m'].mean()
+        taxa_sinistralidade = (muito_similares['sinistros_12m'] > 0).mean()
+        valor_medio_sinistro = muito_similares['valor_sinistros_12m'].mean()
+        
+        # Comparar com a base geral
+        desvio_media = media_sinistros - self.estatisticas_base['media_sinistros_12m']
+        
+        # Calcular score (0-1000)
+        # Base: 500
+        score = 500
+        
+        # Ajustes baseados em sinistralidade
+        if taxa_sinistralidade < 0.2:  # Menos de 20% tiveram sinistros
+            score += 150
+        elif taxa_sinistralidade < 0.4:
+            score += 50
+        elif taxa_sinistralidade > 0.6:
+            score -= 100
+        elif taxa_sinistralidade > 0.8:
+            score -= 200
+        
+        # Ajuste por média de sinistros
+        if media_sinistros < 0.5:
+            score += 100
+        elif media_sinistros < 1:
+            score += 50
+        elif media_sinistros > 2:
+            score -= 100
+        elif media_sinistros > 3:
+            score -= 150
+        
+        # Ajuste por valor médio
+        if valor_medio_sinistro < 5000:
+            score += 50
+        elif valor_medio_sinistro > 15000:
+            score -= 100
+        elif valor_medio_sinistro > 25000:
+            score -= 150
+        
+        # Limitar score
+        score = max(0, min(1000, score))
+        
+        # Análise detalhada
+        analise = {
+            'score': score,
+            'confianca': confianca,
+            'total_similares': len(muito_similares),
+            'taxa_sinistralidade': f"{taxa_sinistralidade:.1%}",
+            'media_sinistros': f"{media_sinistros:.2f}",
+            'valor_medio': f"R$ {valor_medio_sinistro:,.2f}",
+            
+            # Comparação com base
+            'vs_base': {
+                'sinistros': 'ACIMA' if desvio_media > 0 else 'ABAIXO',
+                'desvio': f"{abs(desvio_media):.2f}",
+                'percentil': self._calcular_percentil(media_sinistros)
+            },
+            
+            # Insights
+            'insights': self._gerar_insights(muito_similares, dados_cliente)
+        }
+        
+        return analise
+    
+    def _calcular_percentil(self, valor: float) -> int:
+        """Calcula em que percentil o valor está na base"""
+        if self.base_embeddings is None:
+            return 50
+        
+        df = pd.DataFrame(self.base_embeddings)
+        todos_valores = df['historico_sinistros.total_sinistros_12m'].values
+        percentil = (todos_valores < valor).mean() * 100
+        return int(percentil)
+    
+    def _gerar_insights(self, similares: pd.DataFrame, dados_cliente: Dict) -> List[str]:
+        """Gera insights específicos baseados nos similares"""
+        insights = []
+        
+        # Sinistros mais comuns
+        tipo_mais_comum = similares['tipo_sinistro'].mode()[0] if not similares.empty else 'Colisão'
+        insights.append(f"🚗 Tipo de sinistro mais comum em perfis similares: {tipo_mais_comum}")
+        
+        # Taxa de sinistralidade
+        taxa = (similares['sinistros_12m'] > 0).mean()
+        if taxa < 0.3:
+            insights.append(f"✅ Apenas {taxa:.0%} dos clientes similares tiveram sinistros")
+        else:
+            insights.append(f"⚠️ {taxa:.0%} dos clientes similares tiveram sinistros")
+        
+        # Valor médio
+        valor_medio = similares['valor_sinistros_12m'].mean()
+        if valor_medio < 5000:
+            insights.append(f"💰 Sinistros de baixo valor em média (R$ {valor_medio:,.0f})")
+        elif valor_medio > 15000:
+            insights.append(f"💸 Sinistros de alto valor em média (R$ {valor_medio:,.0f})")
+        
+        # Comparação regional
+        mesma_regiao = similares[similares['cep'].str[:2] == dados_cliente.get('localizacao', {}).get('cep', '')[:2]]
+        if not mesma_regiao.empty:
+            taxa_regiao = (mesma_regiao['sinistros_12m'] > 0).mean()
+            insights.append(f"📍 Na sua região: {taxa_regiao:.0%} de sinistralidade")
+        
+        return insights
+
+def calcular_score_final_duplo(
+    score_apis: int,
+    score_similaridade: int,
+    confianca_similaridade: str
+) -> Tuple[int, str]:
+    """
+    Combina os dois scores em um score final
+    
+    Args:
+        score_apis: Score das APIs públicas (0-1000)
+        score_similaridade: Score baseado em similaridade (0-1000)
+        confianca_similaridade: ALTA, MÉDIA ou BAIXA
+    
+    Returns:
+        (score_final, metodo_usado)
+    """
+    
+    # Pesos baseados na confiança
+    if confianca_similaridade == 'ALTA':
+        # 70% similaridade, 30% APIs
+        score_final = int(score_similaridade * 0.7 + score_apis * 0.3)
+        metodo = "70% Similaridade + 30% APIs"
+    
+    elif confianca_similaridade == 'MÉDIA':
+        # 50% cada
+        score_final = int(score_similaridade * 0.5 + score_apis * 0.5)
+        metodo = "50% Similaridade + 50% APIs"
+    
+    else:  # BAIXA
+        # 20% similaridade, 80% APIs
+        score_final = int(score_similaridade * 0.2 + score_apis * 0.8)
+        metodo = "20% Similaridade + 80% APIs"
+    
+    return score_final, metodo
+
+# ================================
+# INTERFACE STREAMLIT PARA ANÁLISE DUPLA
+# ================================
+def exibir_analise_dupla(
+    analisador: AnalisadorEmbeddings,
+    dados_cliente: Dict,
+    score_apis: int
+):
+    """
+    Exibe interface completa da análise dupla
+    """
+    st.header("🔬 Análise Avançada com Base Vetorizada")
+    
+    # Calcular score de similaridade
+    with st.spinner("🧮 Analisando similaridade com 1M+ clientes..."):
+        resultado_similaridade = analisador.calcular_score_similaridade(dados_cliente)
+    
+    # Score final combinado
+    score_final, metodo = calcular_score_final_duplo(
+        score_apis,
+        resultado_similaridade['score'],
+        resultado_similaridade['confianca']
+    )
+    
+    # Exibir resultados
+    st.subheader("📊 Resultado da Análise Dupla")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Score APIs",
+            f"{score_apis}",
+            "Análise tradicional"
+        )
+    
+    with col2:
+        st.metric(
+            "Score Similaridade",
+            f"{resultado_similaridade['score']}",
+            f"Confiança: {resultado_similaridade['confianca']}"
+        )
+    
+    with col3:
+        st.metric(
+            "SCORE FINAL",
+            f"{score_final}",
+            metodo
+        )
+    
+    with col4:
+        classificacao = (
+            "PREMIUM" if score_final >= 800 else
+            "EXCELENTE" if score_final >= 650 else
+            "BOM" if score_final >= 500 else
+            "REGULAR" if score_final >= 350 else
+            "ATENÇÃO" if score_final >= 200 else
+            "CRÍTICO"
+        )
+        st.metric(
+            "Classificação Final",
+            classificacao,
+            "🏆" if score_final >= 800 else "⭐" if score_final >= 650 else "✅"
+        )
+    
+    # Detalhamento da análise de similaridade
+    with st.expander("🔍 Detalhes da Análise de Similaridade", expanded=True):
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 📈 Estatísticas dos Similares")
+            st.write(f"**Clientes analisados:** {resultado_similaridade['total_similares']}")
+            st.write(f"**Taxa de sinistralidade:** {resultado_similaridade['taxa_sinistralidade']}")
+            st.write(f"**Média de sinistros/ano:** {resultado_similaridade['media_sinistros']}")
+            st.write(f"**Valor médio sinistro:** {resultado_similaridade['valor_medio']}")
+        
+        with col2:
+            st.markdown("### 📊 Comparação com Base Geral")
+            vs = resultado_similaridade['vs_base']
+            st.write(f"**Posição:** {vs['sinistros']} da média")
+            st.write(f"**Desvio:** {vs['desvio']} sinistros/ano")
+            st.write(f"**Percentil:** {vs['percentil']}º")
+            
+            # Barra de percentil
+            st.progress(vs['percentil'] / 100)
+        
+        # Insights
+        st.markdown("### 💡 Insights Automáticos")
+        for insight in resultado_similaridade['insights']:
+            st.info(insight)
+    
+    # Visualização dos similares
+    with st.expander("👥 Ver Clientes Similares (Top 10)"):
+        similares = analisador.encontrar_similares(dados_cliente, k=10)
+        
+        # Preparar para exibição
+        similares_display = similares[['similaridade', 'marca', 'modelo', 
+                                      'sinistros_12m', 'valor_sinistros_12m', 'cep']]
+        similares_display['similaridade'] = similares_display['similaridade'].apply(lambda x: f"{x:.1%}")
+        similares_display['valor_sinistros_12m'] = similares_display['valor_sinistros_12m'].apply(lambda x: f"R$ {x:,.0f}")
+        
+        st.dataframe(similares_display, use_container_width=True, hide_index=True)
+    
+    # Estatísticas da base
+    if st.checkbox("📊 Ver Estatísticas Gerais da Base"):
+        st.markdown("### Estatísticas da Base Vetorizada")
+        
+        stats = analisador.estatisticas_base
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("Score de Risco", f"{score_final:.1f}/100")
+            st.metric("Total de Clientes", f"{stats['total_clientes']:,}")
+            st.metric("Taxa de Sinistralidade", f"{stats['taxa_sinistralidade']:.1%}")
         
         with col2:
-            st.metric("Banda de Risco", banda)
+            st.metric("Média Sinistros/Ano", f"{stats['media_sinistros_12m']:.2f}")
+            st.metric("Valor Médio Sinistro", f"R$ {stats['valor_medio_sinistro']:,.0f}")
         
         with col3:
-            cor = "🟢" if score_final >= 70 else "🟡" if score_final >= 40 else "🔴"
-            st.metric("Status", cor)
+            st.metric("Mediana Sinistros", f"{stats['mediana_sinistros_12m']:.1f}")
+            st.metric("Percentil 90", f"{stats['percentil_90_sinistros']:.1f}")
         
-        # CÁLCULO DETALHADO DO SCORE
-        st.subheader("🧮 Cálculo Detalhado do Score")
+        # Top veículos sinistrados
+        st.markdown("#### 🚗 Top 5 Veículos Mais Sinistrados")
+        veiculos_top = list(stats['veiculos_mais_sinistrados'].items())[:5]
+        for (marca, modelo), media in veiculos_top:
+            st.write(f"• {marca} {modelo}: {media:.2f} sinistros/ano")
         
-        with st.expander("📐 Ver Fórmula Completa", expanded=True):
-            st.markdown("""
-            ### Fórmula do Score:
-            ```
-            Score Final = Score Base + Σ(Ajustes)
-            
-            Onde:
-            - Score Base = 70 pontos (neutro)
-            - Σ(Ajustes) = Soma de todos os ajustes (positivos e negativos)
-            ```
-            """)
-            
-            # Tabela de cálculo
-            st.markdown("### Decomposição do Cálculo:")
-            
-            col_calc1, col_calc2 = st.columns([3, 1])
-            
-            with col_calc1:
-                st.write("**Score Base (Neutro)**")
-            with col_calc2:
-                st.write(f"**+{score_base:.1f}**")
-            
-            st.markdown("---")
-            
-            # Ajustes Positivos
-            ajustes_positivos = [r for r in todas_reasons if any(c in r for c in ['+'])]
-            ajustes_negativos = [r for r in todas_reasons if any(c in r for c in ['-'])]
-            
-            if ajustes_positivos:
-                st.markdown("#### ✅ Ajustes Positivos:")
-                for reason in ajustes_positivos:
-                    # Extrai o valor
-                    import re
-                    match = re.search(r'\+(\d+)', reason)
-                    if match:
-                        valor = match.group(1)
-                        st.write(f"• {reason}")
-            
-            if ajustes_negativos:
-                st.markdown("#### ❌ Ajustes Negativos:")
-                for reason in ajustes_negativos:
-                    st.write(f"• {reason}")
-            
-            st.markdown("---")
-            
-            col_total1, col_total2 = st.columns([3, 1])
-            
-            with col_total1:
-                st.write("**Total de Ajustes**")
-            with col_total2:
-                st.write(f"**{ajuste_total:+.1f}**")
-            
-            st.markdown("---")
-            
-            # Resultado Final
-            st.markdown("### 🎯 Resultado Final:")
-            st.code(f"""
-Score Base:        {score_base:.1f} pts
-Total Ajustes:     {ajuste_total:+.1f} pts
-─────────────────────────
-Score Final:       {score_final:.1f} pts
-Banda de Risco:    {banda}
-            """)
-            
-            # Explicação da Banda
-            st.info(f"""
-            **Interpretação da Banda "{banda}":**
-            
-            • MUITO BAIXO (80-100): Risco mínimo - Perfil excelente
-            • BAIXO (60-79): Risco reduzido - Perfil bom
-            • MÉDIO (40-59): Risco moderado - Atenção recomendada
-            • ALTO (20-39): Risco elevado - Requer cuidados
-            • MUITO ALTO (0-19): Risco crítico - Perfil preocupante
-            """)
-            
-            # Contexto dos Ajustes
-            st.markdown("### 📊 Por Que Esses Fatores Importam?")
-            
-            st.markdown("""
-            **Contexto Estatístico:**
-            
-            🚗 **Densidade de Frota + Qualidade das Vias:**
-            - Em regiões com **milhões de veículos** e **vias ruins**, a probabilidade de acidentes aumenta exponencialmente
-            - Exemplo: 1 veículo em via ruim = risco X | 1 milhão de veículos em vias ruins = risco 50X
-            - **Fórmula de Risco**: `Risco = (Frota × Condição_Vias × Taxa_Acidentes) / Fiscalização`
-            
-            ⚠️ **Criminalidade Regional:**
-            - Taxa de roubo/furto por 100 mil veículos
-            - Alto volume de veículos + Alta criminalidade = Alvo mais fácil
-            - Seu veículo específico se dilui na estatística, mas o risco regional permanece
-            
-            🚔 **Fiscalização (Fator Protetor):**
-            - Fiscalização intensa REDUZ acidentes em até 40%
-            - Por isso é o ÚNICO ajuste positivo regional (+4 pts)
-            - Equilibra o risco da alta densidade
-            
-            **Exemplo Prático:**
-            ```
-            Cenário A: São Paulo - Morumbi
-            - Frota: 8 milhões de veículos (-5 pts)
-            - Vias: Boas condições (0 pts)
-            - Fiscalização: Intensa (+4 pts)
-            - Criminalidade: Moderada (-5 pts)
-            Total: -6 pts (Risco equilibrado pela fiscalização)
-            
-            Cenário B: Cidade pequena - 50 mil veículos
-            - Frota: Baixa densidade (0 pts)
-            - Vias: Ruins (-6 pts)
-            - Fiscalização: Ausente (0 pts)
-            - Criminalidade: Baixa (0 pts)
-            Total: -6 pts (Mesmo risco final, mas fatores diferentes)
-            ```
-            """)
-        
-        # Fatores
-        if todas_reasons:
-            st.subheader("🎯 Todos os Fatores de Impacto")
-            for i, reason in enumerate(todas_reasons, 1):
-                # Identifica se é positivo ou negativo
-                if '+' in reason:
-                    st.success(f"{i}. {reason}")
-                elif '-' in reason:
-                    st.error(f"{i}. {reason}")
-                else:
-                    st.info(f"{i}. {reason}")
-        
-        # Insights Tavily
-        if insights_tavily:
-            st.subheader("🧠 Insights Tavily Intelligence")
-            
-            st.info("""
-            **ℹ️ Sobre a Confiabilidade:**
-            - ✅ **ALTA**: Maioria das fontes são oficiais
-            - ⚠️ **MÉDIA**: Algumas fontes oficiais
-            - ❌ **BAIXA**: Poucas fontes oficiais
-            """)
-            
-            for insight in insights_tavily:
-                conf = insight.get('confiabilidade', {
-                    'nivel': 'MÉDIA', 'cor': 'orange', 'emoji': '⚠️',
-                    'motivo': 'N/A', 'fontes': 'N/A'
-                })
-                
-                col_header, col_selo = st.columns([4, 1])
-                
-                with col_header:
-                    st.markdown(f"### {insight.get('tipo', 'Análise')}")
-                
-                with col_selo:
-                    if conf.get('nivel') == 'ALTA':
-                        st.success(f"{conf.get('emoji', '✅')} ALTA")
-                    elif conf.get('nivel') == 'MÉDIA':
-                        st.warning(f"{conf.get('emoji', '⚠️')} MÉDIA")
-                    else:
-                        st.error(f"{conf.get('emoji', '❌')} BAIXA")
-                
-                st.info(insight.get('texto', 'Sem informações'))
-                
-                with st.expander("📊 Detalhes de Confiabilidade"):
-                    st.write(f"**Nível:** {conf.get('nivel', 'N/A')}")
-                    st.write(f"**Motivo:** {conf.get('motivo', 'N/A')}")
-                    st.write(f"**Fontes:** {conf.get('fontes', 'N/A')}")
-                
-                st.markdown("---")
-        
-        # Dados BrasilAPI
-        if dados_brasilapi:
-            with st.expander("🌐 Dados BrasilAPI"):
-                st.json(dados_brasilapi)
-        
-        # Download
-        st.subheader("💾 Exportar")
-        
-        resultado_completo = {
-            'timestamp': datetime.now().isoformat(),
-            'score': score_final,
-            'banda': banda,
-            'ajuste_total': ajuste_total,
-            'reasons': todas_reasons,
-            'dados_brasilapi': dados_brasilapi,
-            'insights_tavily': insights_tavily
-        }
-        
-        st.download_button(
-            "⬇️ Baixar JSON",
-            data=json.dumps(resultado_completo, indent=2, ensure_ascii=False),
-            file_name=f"score_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
+        # Tipos de sinistro
+        st.markdown("#### 🔧 Distribuição por Tipo de Sinistro")
+        for tipo, qtd in list(stats['tipos_sinistro'].items())[:5]:
+            st.write(f"• {tipo}: {qtd} casos")
+    
+    return score_final, classificacao
 
+# ================================
+# EXEMPLO DE USO
+# ================================
 if __name__ == "__main__":
-    main()
+    
+    # Simular dados de cliente
+    cliente_exemplo = {
+        "identificacao": {
+            "cpf": "12345678901",
+            "nome_completo": "João Silva Santos"
+        },
+        "localizacao": {
+            "cep": "01310100"
+        },
+        "veiculo": {
+            "marca": "Volkswagen",
+            "modelo": "Gol 1.6 MSI",
+            "ano_fabricacao": 2020,
+            "ano_modelo": 2021,
+            "combustivel": "Flex",
+            "cor": "Branco",
+            "categoria": "Passeio",
+            "valor_fipe": 58000.00
+        },
+        "historico_sinistros": {
+            "total_sinistros_12m": 0,
+            "total_sinistros_24m": 0,
+            "total_sinistros_36m": 0,
+            "valor_total_sinistros_12m": 0,
+            "valor_medio_sinistro": 0,
+            "tipo_predominante": "Nenhum",
+            "pecas_substituidas_12m": "",
+            "categoria_peca_mais_trocada": "",
+            "frequencia_anual": 0,
+            "dias_desde_ultimo_sinistro": 999
+        }
+    }
+    
+    # Criar analisador
+    analisador = AnalisadorEmbeddings()
+    
+    # Carregar base (quando disponível)
+    # analisador.carregar_base('clientes_embeddings.pkl')
+    
+    # Calcular score
+    resultado = analisador.calcular_score_similaridade(cliente_exemplo)
+    
+    print(f"Score de Similaridade: {resultado['score']}")
+    print(f"Confiança: {resultado['confianca']}")
+    print(f"Insights: {resultado['insights']}")
+
+# ================================
+# FUNÇÕES UTILITÁRIAS ADICIONAIS
+# ================================
+
+def gerar_relatorio_completo(
+    analisador: AnalisadorEmbeddings,
+    dados_cliente: Dict,
+    score_apis: int,
+    output_path: str = None
+) -> Dict:
+    """
+    Gera relatório completo da análise dupla
+    """
+    # Análise de similaridade
+    resultado_similaridade = analisador.calcular_score_similaridade(dados_cliente)
+    
+    # Score final
+    score_final, metodo = calcular_score_final_duplo(
+        score_apis,
+        resultado_similaridade['score'],
+        resultado_similaridade['confianca']
+    )
+    
+    # Classificação
+    classificacao = (
+        "PREMIUM" if score_final >= 800 else
+        "EXCELENTE" if score_final >= 650 else
+        "BOM" if score_final >= 500 else
+        "REGULAR" if score_final >= 350 else
+        "ATENÇÃO" if score_final >= 200 else
+        "CRÍTICO"
+    )
+    
+    # Montar relatório
+    relatorio = {
+        'timestamp': datetime.now().isoformat(),
+        'dados_cliente': dados_cliente,
+        'analise_apis': {
+            'score': score_apis,
+            'fonte': 'BrasilAPI + Tavily'
+        },
+        'analise_similaridade': resultado_similaridade,
+        'score_final': {
+            'valor': score_final,
+            'metodo_calculo': metodo,
+            'classificacao': classificacao
+        },
+        'recomendacoes': gerar_recomendacoes(score_final, classificacao, resultado_similaridade),
+        'estatisticas_base': analisador.estatisticas_base if analisador.base_embeddings else None
+    }
+    
+    # Salvar se path fornecido
+    if output_path:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(relatorio, f, indent=2, ensure_ascii=False)
+    
+    return relatorio
+
+def gerar_recomendacoes(score: int, classificacao: str, analise_similaridade: Dict) -> Dict:
+    """
+    Gera recomendações específicas baseadas no score
+    """
+    recomendacoes = {
+        'aprovacao': '',
+        'premio_sugerido': '',
+        'condicoes': [],
+        'dispositivos': [],
+        'alertas': []
+    }
+    
+    if classificacao == 'PREMIUM':
+        recomendacoes['aprovacao'] = 'APROVAÇÃO AUTOMÁTICA'
+        recomendacoes['premio_sugerido'] = 'Desconto máximo (-25%)'
+        recomendacoes['condicoes'] = ['Fast-track', 'Produtos premium disponíveis']
+        
+    elif classificacao == 'EXCELENTE':
+        recomendacoes['aprovacao'] = 'APROVAÇÃO SIMPLIFICADA'
+        recomendacoes['premio_sugerido'] = 'Desconto (-15%)'
+        recomendacoes['condicoes'] = ['Análise expressa']
+        
+    elif classificacao == 'BOM':
+        recomendacoes['aprovacao'] = 'APROVAÇÃO PADRÃO'
+        recomendacoes['premio_sugerido'] = 'Prêmio base'
+        recomendacoes['condicoes'] = ['Processo normal']
+        
+    elif classificacao == 'REGULAR':
+        recomendacoes['aprovacao'] = 'ANÁLISE ADICIONAL'
+        recomendacoes['premio_sugerido'] = 'Majoração (+20%)'
+        recomendacoes['condicoes'] = ['Vistoria prévia']
+        recomendacoes['dispositivos'] = ['Rastreador recomendado']
+        
+    elif classificacao == 'ATENÇÃO':
+        recomendacoes['aprovacao'] = 'APROVAÇÃO CONDICIONAL'
+        recomendacoes['premio_sugerido'] = 'Majoração (+40%)'
+        recomendacoes['condicoes'] = ['Vistoria obrigatória', 'Franquia elevada']
+        recomendacoes['dispositivos'] = ['Rastreador obrigatório']
+        recomendacoes['alertas'] = ['Risco elevado identificado']
+        
+    else:  # CRÍTICO
+        recomendacoes['aprovacao'] = 'RECUSA RECOMENDADA'
+        recomendacoes['premio_sugerido'] = 'Majoração (+80-100%)'
+        recomendacoes['condicoes'] = ['Múltiplas restrições', 'Análise gerencial']
+        recomendacoes['dispositivos'] = ['Rastreador + Bloqueador']
+        recomendacoes['alertas'] = ['Risco crítico', 'Avaliar alternativas']
+    
+    # Adicionar insights da similaridade
+    if analise_similaridade.get('taxa_sinistralidade'):
+        taxa = float(analise_similaridade['taxa_sinistralidade'].strip('%')) / 100
+        if taxa > 0.5:
+            recomendacoes['alertas'].append(f'Alta sinistralidade em perfis similares ({taxa:.0%})')
+    
+    return recomendacoes
+
+def exportar_para_ml(
+    analisador: AnalisadorEmbeddings,
+    dados_cliente: Dict,
+    score_final: int,
+    formato: str = 'numpy'
+) -> np.ndarray:
+    """
+    Exporta dados preparados para modelos de ML
+    """
+    # Vetorizar cliente
+    vetor_base = analisador.vetorizar_cliente(dados_cliente)
+    
+    # Adicionar score como feature
+    vetor_completo = np.append(vetor_base, score_final)
+    
+    if formato == 'numpy':
+        return vetor_completo
+    elif formato == 'pandas':
+        return pd.DataFrame([vetor_completo])
+    elif formato == 'dict':
+        return {f'feature_{i}': v for i, v in enumerate(vetor_completo)}
+    else:
+        return vetor_completo
+
+def validar_dados_cliente(dados: Dict) -> Tuple[bool, List[str]]:
+    """
+    Valida se os dados do cliente estão completos
+    """
+    erros = []
+    
+    # Validações obrigatórias
+    if not dados.get('localizacao', {}).get('cep'):
+        erros.append('CEP é obrigatório')
+    
+    if not dados.get('veiculo', {}).get('marca'):
+        erros.append('Marca do veículo é obrigatória')
+    
+    if not dados.get('veiculo', {}).get('modelo'):
+        erros.append('Modelo do veículo é obrigatório')
+    
+    # Validações de formato
+    cep = dados.get('localizacao', {}).get('cep', '')
+    if cep and not cep.replace('-', '').isdigit():
+        erros.append('CEP deve conter apenas números')
+    
+    valor_fipe = dados.get('veiculo', {}).get('valor_fipe', 0)
+    if valor_fipe and valor_fipe < 0:
+        erros.append('Valor FIPE não pode ser negativo')
+    
+    return len(erros) == 0, erros
+
+def criar_dashboard_metricas(analisador: AnalisadorEmbeddings) -> Dict:
+    """
+    Cria métricas para dashboard executivo
+    """
+    if not analisador.estatisticas_base:
+        return {}
+    
+    stats = analisador.estatisticas_base
+    
+    dashboard = {
+        'metricas_principais': {
+            'total_clientes': stats['total_clientes'],
+            'taxa_sinistralidade': f"{stats['taxa_sinistralidade']:.1%}",
+            'sinistro_medio_anual': f"{stats['media_sinistros_12m']:.2f}",
+            'valor_medio_sinistro': f"R$ {stats['valor_medio_sinistro']:,.0f}"
+        },
+        'top_riscos': {
+            'veiculos': list(stats['veiculos_mais_sinistrados'].items())[:5],
+            'regioes': list(stats['regioes_criticas'].items())[:5],
+            'pecas': list(stats['pecas_frequentes'].items())[:5]
+        },
+        'distribuicao': {
+            'tipos_sinistro': stats['tipos_sinistro'],
+            'percentis': {
+                'p25': stats.get('percentil_25', 0),
+                'p50': stats['mediana_sinistros_12m'],
+                'p75': stats.get('percentil_75', 0),
+                'p90': stats['percentil_90_sinistros']
+            }
+        },
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    return dashboard
+
+# ================================
+# CACHE E OTIMIZAÇÃO
+# ================================
+
+class CacheEmbeddings:
+    """
+    Sistema de cache para otimizar consultas repetidas
+    """
+    
+    def __init__(self, ttl_seconds: int = 3600):
+        self.cache = {}
+        self.ttl = ttl_seconds
+    
+    def _gerar_chave(self, dados: Dict) -> str:
+        """Gera chave única para o cache"""
+        import hashlib
+        dados_str = json.dumps(dados, sort_keys=True)
+        return hashlib.md5(dados_str.encode()).hexdigest()
+    
+    def get(self, dados: Dict) -> Optional[Dict]:
+        """Busca no cache"""
+        chave = self._gerar_chave(dados)
+        
+        if chave in self.cache:
+            entrada = self.cache[chave]
+            tempo_decorrido = (datetime.now() - entrada['timestamp']).seconds
+            
+            if tempo_decorrido < self.ttl:
+                return entrada['resultado']
+            else:
+                del self.cache[chave]
+        
+        return None
+    
+    def set(self, dados: Dict, resultado: Dict):
+        """Salva no cache"""
+        chave = self._gerar_chave(dados)
+        self.cache[chave] = {
+            'resultado': resultado,
+            'timestamp': datetime.now()
+        }
+    
+    def limpar(self):
+        """Limpa cache expirado"""
+        agora = datetime.now()
+        chaves_expiradas = []
+        
+        for chave, entrada in self.cache.items():
+            tempo_decorrido = (agora - entrada['timestamp']).seconds
+            if tempo_decorrido >= self.ttl:
+                chaves_expiradas.append(chave)
+        
+        for chave in chaves_expiradas:
+            del self.cache[chave]
+
+# Instância global do cache
+cache_global = CacheEmbeddings()
+
+# ================================
+# INTEGRAÇÃO COM STREAMLIT
+# ================================
+
+def criar_interface_completa():
+    """
+    Interface Streamlit completa com análise dupla
+    """
+    st.set_page_config(
+        page_title="Sistema de Score Duplo",
+        page_icon="🧬",
+        layout="wide"
+    )
+    
+    st.title("🧬 Sistema de Score Duplo - APIs + Embeddings")
+    
+    # Upload do arquivo PKL
+    uploaded_file = st.file_uploader(
+        "Carregar base de embeddings (.pkl)",
+        type=['pkl', 'pickle']
+    )
+    
+    if uploaded_file:
+        # Salvar temporariamente
+        with open('temp_embeddings.pkl', 'wb') as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # Criar analisador
+        analisador = AnalisadorEmbeddings('temp_embeddings.pkl')
+        
+        st.success(f"✅ Base carregada: {analisador.estatisticas_base['total_clientes']:,} clientes")
+        
+        # Mostrar dashboard
+        if st.checkbox("📊 Ver Dashboard da Base"):
+            dashboard = criar_dashboard_metricas(analisador)
+            
+            # Métricas principais
+            cols = st.columns(4)
+            for i, (key, value) in enumerate(dashboard['metricas_principais'].items()):
+                cols[i].metric(key.replace('_', ' ').title(), value)
+            
+            # Top riscos
+            st.subheader("⚠️ Top Riscos Identificados")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**Veículos Mais Sinistrados**")
+                for (marca, modelo), media in dashboard['top_riscos']['veiculos']:
+                    st.write(f"• {marca} {modelo}: {media:.2f}/ano")
+            
+            with col2:
+                st.markdown("**Regiões Críticas**")
+                for cep, media in dashboard['top_riscos']['regioes']:
+                    st.write(f"• CEP {cep}: {media:.2f}/ano")
+            
+            with col3:
+                st.markdown("**Peças Mais Trocadas**")
+                for peca, freq in dashboard['top_riscos']['pecas']:
+                    st.write(f"• {peca}: {freq}x")
+
+# Executar interface se chamado diretamente
+if __name__ == "__main__" and 'streamlit' in globals():
+    criar_interface_completa()
